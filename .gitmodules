@@ -12,7 +12,7 @@
 	url = https://github.com/Artificial-Pancreas/CGMBLEKit.git
 [submodule "MinimedKit"]
 	path = MinimedKit
-	url = https://github.com/Artificial-Pancreas/MinimedKit.git
+	url = https://github.com/vladimirdyskin/MinimedKit.git
 [submodule "OmniBLE"]
 	path = OmniBLE
 	url = https://github.com/Artificial-Pancreas/OmniBLE.git
