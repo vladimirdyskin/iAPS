@@ -102,6 +102,11 @@ final class BaseAPSManager: APSManager, Injectable {
 
     private var backGroundTaskID: UIBackgroundTaskIdentifier?
 
+    // Настойчивый повтор loop при потере связи с помпой (stage C)
+    private static let maxEarlyLoopRetries = 2
+    private static let earlyLoopRetryDelay: TimeInterval = 60
+    private var earlyLoopRetries = 0
+
     private var pumpManager: PumpManagerUI? { deviceDataManager.pumpManager }
 
     @Persisted(key: "isManualTempBasal") var isManualTempBasal: Bool = false
@@ -299,11 +304,13 @@ final class BaseAPSManager: APSManager, Injectable {
 //            }
             processError(apsError)
             loopStats(loopStatRecord: loopStatRecord, error: apsError)
+            scheduleEarlyRetryIfNeeded(for: apsError)
         } else {
             debug(.apsManager, "Loop succeeded")
             lastLoopDate = Date()
             lastError.send(nil)
             loopStats(loopStatRecord: loopStatRecord, error: nil)
+            earlyLoopRetries = 0
         }
 
         if settings.closedLoop {
@@ -314,6 +321,40 @@ final class BaseAPSManager: APSManager, Injectable {
         if let backgroundTask = backGroundTaskID {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             backGroundTaskID = .invalid
+        }
+    }
+
+    // Stage C: при сбое loop из-за связи с помпой пробуем снова через 60с, не дожидаясь
+    // следующего CGM (5 мин). Только для comms-ошибок (не глюкозных/логических).
+    // Лимит maxEarlyLoopRetries защищает от радио-шторма и разряда. determineBasal
+    // пересчитывается с учётом IOB -> повторный SMB будет уменьшен/обнулён.
+    private func scheduleEarlyRetryIfNeeded(for error: Error) {
+        guard let apsError = error as? APSError else { return }
+        let isCommsError: Bool
+        switch apsError {
+        case .deviceSyncError,
+             .invalidPumpState,
+             .pumpError:
+            isCommsError = true
+        default:
+            isCommsError = false
+        }
+        guard isCommsError else {
+            earlyLoopRetries = 0
+            return
+        }
+        guard earlyLoopRetries < Self.maxEarlyLoopRetries else {
+            debug(.apsManager, "Pump comms retry limit reached, waiting for next cycle")
+            earlyLoopRetries = 0
+            return
+        }
+        earlyLoopRetries += 1
+        debug(
+            .apsManager,
+            "Pump comms loop failure, scheduling early retry \(earlyLoopRetries)/\(Self.maxEarlyLoopRetries) in \(Int(Self.earlyLoopRetryDelay))s"
+        )
+        processQueue.asyncAfter(deadline: .now() + Self.earlyLoopRetryDelay) { [weak self] in
+            self?.loop()
         }
     }
 
