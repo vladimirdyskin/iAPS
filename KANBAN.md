@@ -5,6 +5,8 @@ tags: [code, kanban, project, iAPS, picklelink]
 
 ## Backlog
 
+- [ ] 🟡 **Comms C: ранний re-loop в APSManager при pump-ошибке (риск повторного SMB)** `APSManager.swift:289`
+- [ ] 🔴 **Bolus retry через history-verification (осторожно — передозировка)** `PumpOpsSession / MinimedPumpManager`
 - [ ] 🔴 **Unfinalized doses are never reported to LoopKit as pump events — IOB undercount until async history walk** `PickleLinkPumpManager.swift:265-270, 305-309, 414-431`
 - [ ] 🔴 **enactBolus drops an already-delivered dose when post-bolus status reports !bolusing (reports failure, never records IOB)** `PickleLinkPumpManager.swift:254-271`
 - [ ] 🟠 **Temp basal always sent as absolute mU/h without checking the pump's tempBasalType (percent vs absolute)** `PickleLinkPumpManager.swift:301-309`
@@ -39,6 +41,9 @@ tags: [code, kanban, project, iAPS, picklelink]
 ## Review
 
 ## Done
+
+- [x] 🟢 **Comms A: окно ответа 200→300мс + wakeup burst retry 0→1** `MinimedKit (61cfa6c)`
+- [x] 🟢 **Comms B: setTempBasal настойчивый retry (set→read-back→повтор), idempotent, без дублей** `PumpOpsSession.swift`
 
 %% kanban:settings
 ```
