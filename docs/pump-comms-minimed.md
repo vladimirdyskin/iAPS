@@ -119,3 +119,75 @@ read-back верификацию, а не на слепую переотправ
 Правки в `MinimedKit/...` идут в отдельный репозиторий (upstream Artificial-Pancreas/MinimedKit),
 а НЕ в форк iAPS. Чтобы версионировать изменения — нужен форк MinimedKit или хранить
 правки локально. Решить до начала кодинга.
+
+> Сделано: форк `vladimirdyskin/MinimedKit`, ветка `pickle-link-retry`. Submodule в форке
+> iAPS (`pickle-link`) переключён на этот форк через `.gitmodules`.
+
+## 9. Сделанные безопасные правки (этап A)
+
+Форк MinimedKit, ветка `pickle-link-retry`, коммит `61cfa6c`:
+
+| Файл:строка | Было | Стало | Обоснование |
+| --- | --- | --- | --- |
+| MinimedPumpMessageSender.swift:25 | timeout 200 мс | 300 мс | +50% окна поймать ответ при слабом сигнале (все чтения/wakeup) |
+| PumpOpsSession.swift:112 | wakeup burst retry=0 | retry=1 | один доп. шанс разбудить спящую помпу |
+
+Обе идемпотентны (чтения / wakeup) — без риска двойного дозирования.
+
+Пауза между ретраями НЕ добавлена: `retryCount` исполняется прошивкой RileyLink
+(`commandSession.sendAndListen`), а не Swift-циклом — это уже этап B.
+
+## 10. Дизайн умного retry (этап B) — set → read-back → повтор
+
+### Принцип
+Ретраить только то, что ДОКАЗАННО не применилось. Не слепая переотправка, а
+«проверь read-back → повтори только если не применилось».
+
+### Опора: `setTempBasal` уже различает исходы (PumpOpsSession:510-560)
+
+| Исход | Строка | Значение | Ретраить? |
+| --- | --- | --- | --- |
+| `.success(true)` | 547 | read-back подтвердил rate+duration | нет, успех |
+| `.failure` wakeup/preflight | 518, 526 | команда не ушла (до отправки) | да — не применилось |
+| `.failure(pumpError)` | 535 | помпа отвергла по логике | нет — повтор не поможет |
+| `.failure` read-back mismatch | 554 | read-back: не та basal | да — не применилось |
+| `.success(false)` | 558 | read-back не дочитался — неопределённость | только после повторного read-back |
+
+### Алгоритм
+```
+setTempBasalPersistent(rate, duration, maxAttempts = 4):
+    for attempt in 0..<maxAttempts:
+        switch setTempBasal(rate, duration):
+          .success(true)         -> return SUCCESS
+          .failure(pumpError)    -> return FAILURE        // не повторять
+          .failure(notSent | mismatch):
+                backoff(attempt); continue                // доказано не применилось
+          .success(false):                                // неопределённость
+                if readTempBasal() == (rate,duration):
+                     return SUCCESS
+                else backoff(attempt); continue
+    return last outcome
+```
+- backoff: 0.5s -> 1s -> 2s (восстановление радио, без агрессивного разряда)
+- maxAttempts: 4, затем ошибка наверх (батарея/радио-эфир)
+- каждая попытка логируется (отладка дублей)
+
+### Bolus — отдельно и строже
+Двойной болюс = передозировка. Болюс ретраить ТОЛЬКО через чтение history page
+(поиск bolus-события за последние секунды), не через ACK. Консервативный вариант —
+не ретраить болюс автоматически вовсе (оставить уведомление); настойчивость даём
+temp basal, который Loop и так переустанавливает каждый цикл.
+
+### Второй уровень (этап C) — APSManager
+Сейчас после сбоя ждём полный loopInterval (270 с). Опция: при pumpError в
+enactSuggested разрешить ранний повтор loop (~60 с вместо 270), не трогая обычный ритм.
+Делать после того, как внутри-командный retry докажет себя.
+
+### Где реализовать
+- Уровень 1 (старт): обёртка `setTempBasalPersistent` в `PumpOpsSession` (MinimedKit) — есть и команда, и read-back.
+- Уровень 2 (позже): ранний re-loop в APSManager.
+
+### Риски / границы
+- Не ретраим при `pumpError` и `.success(true)` — защита от дублей и зацикливания.
+- maxAttempts + backoff — защита от разряда и радио-шторма.
+- Bolus вне авто-retry — защита от передозировки.
