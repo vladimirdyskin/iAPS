@@ -15,7 +15,7 @@
 
         override var progress: DoseProgress {
             let elapsed = -dose.startDate.timeIntervalSinceNow
-            let programmed = dose.programmedUnits ?? dose.value
+            let programmed = dose.programmedUnits
             let (deliveredUnits, percent) = pumpModel.estimateBolusProgress(
                 elapsed: elapsed,
                 programmedUnits: programmed
@@ -26,7 +26,7 @@
         override func timerParameters() -> (delay: TimeInterval, repeating: TimeInterval) {
             let timeSinceStart = -dose.startDate.timeIntervalSinceNow
             let duration = dose.endDate.timeIntervalSince(dose.startDate)
-            let programmed = dose.programmedUnits ?? dose.value
+            let programmed = dose.programmedUnits
             guard programmed > 0, duration > 0 else {
                 return (delay: 1, repeating: 1)
             }

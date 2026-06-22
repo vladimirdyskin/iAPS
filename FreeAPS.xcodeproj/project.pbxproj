@@ -171,6 +171,10 @@
 		3811DEEB25CA063400A708ED /* Persisted.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3811DEE725CA063400A708ED /* Persisted.swift */; };
 		3811DF0225CA9FEA00A708ED /* Credentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3811DF0125CA9FEA00A708ED /* Credentials.swift */; };
 		3811DF1025CAAAE200A708ED /* APSManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3811DF0F25CAAAE200A708ED /* APSManager.swift */; };
+		PL01000000000011 /* PickleLinkKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = PL01000000000001 /* PickleLinkKit.framework */; };
+		PL01000000000012 /* PickleLinkKitUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = PL01000000000002 /* PickleLinkKitUI.framework */; };
+		PL01000000000021 /* PickleLinkKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = PL01000000000001 /* PickleLinkKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		PL01000000000022 /* PickleLinkKitUI.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = PL01000000000002 /* PickleLinkKitUI.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		3818AA5C274C26A300843DB3 /* MockKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3818AA4E274C26A300843DB3 /* MockKit.framework */; };
 		3818AA5D274C26A300843DB3 /* MockKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3818AA4E274C26A300843DB3 /* MockKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		3818AA5E274C26A300843DB3 /* MockKitUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3818AA4F274C26A300843DB3 /* MockKitUI.framework */; };
@@ -581,6 +585,8 @@
 				3818AA72274C278200843DB3 /* LoopTestingKit.framework in Embed Frameworks */,
 				3818AA5D274C26A300843DB3 /* MockKit.framework in Embed Frameworks */,
 				3818AA5F274C26A300843DB3 /* MockKitUI.framework in Embed Frameworks */,
+				PL01000000000021 /* PickleLinkKit.framework in Embed Frameworks */,
+				PL01000000000022 /* PickleLinkKitUI.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1241,6 +1247,9 @@
 		FEFA5C0E299F810B00765C17 /* Core_Data.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = Core_Data.xcdatamodel; sourceTree = "<group>"; };
 		FEFA5C10299F814A00765C17 /* CoreDataStack.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CoreDataStack.swift; sourceTree = "<group>"; };
 		FEFFA7A12929FE49007B8193 /* UIDevice+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIDevice+Extensions.swift"; sourceTree = "<group>"; };
+		PL01000000000001 /* PickleLinkKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = PickleLinkKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		PL01000000000002 /* PickleLinkKitUI.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = PickleLinkKitUI.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		PL01000000000003 /* PickleLinkKitPlugin.loopplugin */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = PickleLinkKitPlugin.loopplugin; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1257,6 +1266,8 @@
 				3818AA71274C278200843DB3 /* LoopTestingKit.framework in Frameworks */,
 				CE51DD1C2A01970900F163F7 /* ConnectIQ 2.xcframework in Frameworks */,
 				3811DE1025C9D37700A708ED /* Swinject in Frameworks */,
+				PL01000000000011 /* PickleLinkKit.framework in Frameworks */,
+				PL01000000000012 /* PickleLinkKitUI.framework in Frameworks */,
 				3818AA5C274C26A300843DB3 /* MockKit.framework in Frameworks */,
 				3818AA5E274C26A300843DB3 /* MockKitUI.framework in Frameworks */,
 				38B17B6625DD90E0005CAE3D /* SwiftDate in Frameworks */,
@@ -2000,6 +2011,9 @@
 				38E87402274F78C000975559 /* libswiftCoreNFC.tbd */,
 				38E873FD274F761800975559 /* CoreNFC.framework */,
 				3818AA70274C278200843DB3 /* LoopTestingKit.framework */,
+				PL01000000000001 /* PickleLinkKit.framework */,
+				PL01000000000002 /* PickleLinkKitUI.framework */,
+				PL01000000000003 /* PickleLinkKitPlugin.loopplugin */,
 				3818AA4E274C26A300843DB3 /* MockKit.framework */,
 				3818AA4F274C26A300843DB3 /* MockKitUI.framework */,
 				3818AA51274C26A300843DB3 /* MinimedKit.framework */,
@@ -3738,7 +3752,6 @@
 				D2165E9D78EFF692C1DED1C6 /* AddTempTargetDataFlow.swift in Sources */,
 				CE82E02728E869DF00473A9C /* AlertEntry.swift in Sources */,
 				38E4451E274DB04600EC9A94 /* AppDelegate.swift in Sources */,
-				198FEED62D3F8C7900A67FAE /* LiveActivityChart.swift in Sources */,
 				5BFA1C2208114643B77F8CEB /* AddTempTargetProvider.swift in Sources */,
 				BD2FF1A02AE29D43005D1C5D /* CheckboxToggleStyle.swift in Sources */,
 				E0D4F80527513ECF00BDF1FE /* HealthKitSample.swift in Sources */,
@@ -4168,7 +4181,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = $APP_BUILD_NUMBER;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = "$(DEVELOPER_TEAM)";
+				DEVELOPMENT_TEAM = 2CTSS65L58;
 				ENABLE_PREVIEWS = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",

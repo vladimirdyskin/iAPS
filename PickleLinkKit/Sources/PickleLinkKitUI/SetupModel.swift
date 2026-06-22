@@ -6,7 +6,7 @@
     import MinimedKit
     import PickleLinkKit
 
-    @MainActor  final class PickleLinkSetupModel: ObservableObject {
+    @MainActor final class PickleLinkSetupModel: ObservableObject {
         enum Phase {
             case scanning
             case pairing

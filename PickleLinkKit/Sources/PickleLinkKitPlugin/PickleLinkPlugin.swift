@@ -4,7 +4,7 @@
     import PickleLinkKit
     import PickleLinkKitUI
 
-    @objc(PickleLinkPlugin)  final class PickleLinkPlugin: NSObject, PumpManagerUIPlugin {
+    @objc(PickleLinkPlugin) final class PickleLinkPlugin: NSObject, PumpManagerUIPlugin {
         private let log = OSLog(subsystem: "com.pickle.PickleLinkKitPlugin", category: "Plugin")
 
         public var pumpManagerType: PumpManagerUI.Type? {

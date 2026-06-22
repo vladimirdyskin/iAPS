@@ -432,11 +432,11 @@
 
         private func startDateToFilter() -> Date {
             if let q = delegateQueue, let d = lockedDelegate {
-                var date = Date().addingTimeInterval(-.hours(24))
+                var date = Date().addingTimeInterval(-86400.0)
                 q.sync { date = d.startDateToFilterNewPumpEvents(for: self) }
                 return date
             }
-            return Date().addingTimeInterval(-.hours(24))
+            return Date().addingTimeInterval(-86400.0)
         }
 
         private func mapError(_ e: SmartBridgeError) -> PumpManagerError {

@@ -46,4 +46,7 @@
    <FileRef
       location = "container:MedtrumKit/MedtrumKit.xcodeproj">
    </FileRef>
+   <FileRef
+      location = "group:PickleLinkKit/PickleLinkKit.xcodeproj">
+   </FileRef>
 </Workspace>
