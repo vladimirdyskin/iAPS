@@ -281,6 +281,20 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "624A728A0D6143AFB8B1222E"
+               BuildableName = "PickleLinkKitPlugin.loopplugin"
+               BlueprintName = "PickleLinkKitPlugin"
+               ReferencedContainer = "container:PickleLinkKit/PickleLinkKit.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "388E595725AD948C0019842D"
                BuildableName = "FreeAPS.app"
                BlueprintName = "FreeAPS"
