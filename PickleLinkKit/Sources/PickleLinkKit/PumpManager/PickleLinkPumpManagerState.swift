@@ -37,6 +37,13 @@
 
         public var insulinType: InsulinType?
 
+        /// Заряд батареи помпы (0.0–1.0), обновляется при getBattery (0x04).
+        public var pumpBatteryChargeRemaining: Double?
+
+        /// Плановое расписание базала, сохранённое при последнем syncBasalRateSchedule.
+        /// Используется для отображения текущей плановой скорости в UI.
+        public var basalSchedule: BasalRateSchedule?
+
         /// Last time the firmware reported a radio error / watchdog (diagnostics only).
         public var lastRadioErrorAt: Date?
         public var lastWatchdogAt: Date?
@@ -107,8 +114,12 @@
             if let rawInsulinType = rawValue["insulinType"] as? InsulinType.RawValue {
                 insulinType = InsulinType(rawValue: rawInsulinType)
             }
+            pumpBatteryChargeRemaining = rawValue["pumpBatteryChargeRemaining"] as? Double
             lastRadioErrorAt = rawValue["lastRadioErrorAt"] as? Date
             lastWatchdogAt = rawValue["lastWatchdogAt"] as? Date
+            if let rawSchedule = rawValue["basalSchedule"] as? BasalRateSchedule.RawValue {
+                basalSchedule = BasalRateSchedule(rawValue: rawSchedule)
+            }
         }
 
         public var rawValue: RawValue {
@@ -124,11 +135,13 @@
             value["peripheralIdentifier"] = peripheralIdentifier?.uuidString
             value["frequencyHz"] = frequencyHz.map { Int($0) }
             value["reservoirUnits"] = reservoirUnits
+            value["pumpBatteryChargeRemaining"] = pumpBatteryChargeRemaining
             value["unfinalizedBolus"] = unfinalizedBolus?.rawValue
             value["unfinalizedTempBasal"] = unfinalizedTempBasal?.rawValue
             value["insulinType"] = insulinType?.rawValue
             value["lastRadioErrorAt"] = lastRadioErrorAt
             value["lastWatchdogAt"] = lastWatchdogAt
+            value["basalSchedule"] = basalSchedule?.rawValue
             return value
         }
     }

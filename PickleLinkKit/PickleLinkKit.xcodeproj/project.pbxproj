@@ -20,6 +20,7 @@
 		F039AB985B7A4582A1DD086A /* PickleLinkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA25CFCEC1BE4880B9CC8A28 /* PickleLinkClient.swift */; };
 		44F5FCD209A44FAD9E1BB024 /* DoseProgressEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2439508ECB4948B4BCFDA0EF /* DoseProgressEstimator.swift */; };
 		B5266133473C446B85DDC9C3 /* HistorySync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CC07258D99F4B5684266A9F /* HistorySync.swift */; };
+		PL03000000000001 /* CRC16.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL03000000000011 /* CRC16.swift */; };
 		DE9A1662CF2242C1B002BE4B /* PickleLinkConversions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3272B2FB81714D1EB337C259 /* PickleLinkConversions.swift */; };
 		8D9D3412A480472CB40F327A /* PickleLinkPumpManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27CDC9ACB78A42E9B788DDFF /* PickleLinkPumpManager.swift */; };
 		95CB983559964F1FB2928B13 /* PickleLinkPumpManagerState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C34C783FB54436836A97EC /* PickleLinkPumpManagerState.swift */; };
@@ -31,6 +32,9 @@
 		F885BAAC827A4F9C8A9A43F7 /* PickleLinkUICoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E4DF2791DC47208A41AE02 /* PickleLinkUICoordinator.swift */; };
 		E2B7F7549CF44FB79FE9BB9A /* SetupModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF268CF407524F83870B8D33 /* SetupModel.swift */; };
 		54E9EC37F405414AB81F5D0B /* PickleLinkSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5E039C4A954496AAA59340D /* PickleLinkSettingsView.swift */; };
+		PL02000000000001 /* PickleLinkNativeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000011 /* PickleLinkNativeSettingsView.swift */; };
+		PL02000000000002 /* PickleLinkSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000012 /* PickleLinkSettingsViewModel.swift */; };
+		PL02000000000003 /* PickleLinkListDataSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000013 /* PickleLinkListDataSource.swift */; };
 		48F446EFFBB34B09950FD8D1 /* FrequencyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02EE2FB045D74179A28D781B /* FrequencyView.swift */; };
 		8D8F77C56E534C34AB96F19A /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 586DE0EF6366454EA8944116 /* PairingView.swift */; };
 		463C8A83013F4A8E9CE6643A /* PumpIDEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9315FB7A718044528CE6BE4A /* PumpIDEntryView.swift */; };
@@ -87,6 +91,7 @@
 		AA25CFCEC1BE4880B9CC8A28 /* PickleLinkClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkClient.swift; sourceTree = "<group>"; };
 		2439508ECB4948B4BCFDA0EF /* DoseProgressEstimator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DoseProgressEstimator.swift; sourceTree = "<group>"; };
 		2CC07258D99F4B5684266A9F /* HistorySync.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = HistorySync.swift; sourceTree = "<group>"; };
+		PL03000000000011 /* CRC16.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CRC16.swift; sourceTree = "<group>"; };
 		3272B2FB81714D1EB337C259 /* PickleLinkConversions.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkConversions.swift; sourceTree = "<group>"; };
 		27CDC9ACB78A42E9B788DDFF /* PickleLinkPumpManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkPumpManager.swift; sourceTree = "<group>"; };
 		B0C34C783FB54436836A97EC /* PickleLinkPumpManagerState.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkPumpManagerState.swift; sourceTree = "<group>"; };
@@ -95,6 +100,9 @@
 		F2E4DF2791DC47208A41AE02 /* PickleLinkUICoordinator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkUICoordinator.swift; sourceTree = "<group>"; };
 		AF268CF407524F83870B8D33 /* SetupModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SetupModel.swift; sourceTree = "<group>"; };
 		A5E039C4A954496AAA59340D /* PickleLinkSettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkSettingsView.swift; sourceTree = "<group>"; };
+		PL02000000000011 /* PickleLinkNativeSettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkNativeSettingsView.swift; sourceTree = "<group>"; };
+		PL02000000000012 /* PickleLinkSettingsViewModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkSettingsViewModel.swift; sourceTree = "<group>"; };
+		PL02000000000013 /* PickleLinkListDataSource.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkListDataSource.swift; sourceTree = "<group>"; };
 		02EE2FB045D74179A28D781B /* FrequencyView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FrequencyView.swift; sourceTree = "<group>"; };
 		586DE0EF6366454EA8944116 /* PairingView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		9315FB7A718044528CE6BE4A /* PumpIDEntryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PumpIDEntryView.swift; sourceTree = "<group>"; };
@@ -193,6 +201,7 @@
 		1FCAAC4906254F56B60D527A /* PumpManager */ = {
 			isa = PBXGroup;
 			children = (
+				PL03000000000011 /* CRC16.swift */,
 				2439508ECB4948B4BCFDA0EF /* DoseProgressEstimator.swift */,
 				2CC07258D99F4B5684266A9F /* HistorySync.swift */,
 				3272B2FB81714D1EB337C259 /* PickleLinkConversions.swift */,
@@ -218,6 +227,9 @@
 			isa = PBXGroup;
 			children = (
 				A5E039C4A954496AAA59340D /* PickleLinkSettingsView.swift */,
+				PL02000000000011 /* PickleLinkNativeSettingsView.swift */,
+				PL02000000000012 /* PickleLinkSettingsViewModel.swift */,
+				PL02000000000013 /* PickleLinkListDataSource.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -347,6 +359,7 @@
 				F039AB985B7A4582A1DD086A /* PickleLinkClient.swift in Sources */,
 				44F5FCD209A44FAD9E1BB024 /* DoseProgressEstimator.swift in Sources */,
 				B5266133473C446B85DDC9C3 /* HistorySync.swift in Sources */,
+				PL03000000000001 /* CRC16.swift in Sources */,
 				DE9A1662CF2242C1B002BE4B /* PickleLinkConversions.swift in Sources */,
 				8D9D3412A480472CB40F327A /* PickleLinkPumpManager.swift in Sources */,
 				95CB983559964F1FB2928B13 /* PickleLinkPumpManagerState.swift in Sources */,
@@ -361,6 +374,9 @@
 				F885BAAC827A4F9C8A9A43F7 /* PickleLinkUICoordinator.swift in Sources */,
 				E2B7F7549CF44FB79FE9BB9A /* SetupModel.swift in Sources */,
 				54E9EC37F405414AB81F5D0B /* PickleLinkSettingsView.swift in Sources */,
+				PL02000000000001 /* PickleLinkNativeSettingsView.swift in Sources */,
+				PL02000000000002 /* PickleLinkSettingsViewModel.swift in Sources */,
+				PL02000000000003 /* PickleLinkListDataSource.swift in Sources */,
 				48F446EFFBB34B09950FD8D1 /* FrequencyView.swift in Sources */,
 				8D8F77C56E534C34AB96F19A /* PairingView.swift in Sources */,
 				463C8A83013F4A8E9CE6643A /* PumpIDEntryView.swift in Sources */,

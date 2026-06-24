@@ -136,6 +136,11 @@ import Foundation
                 cont?.resume()
             }
         }
+
+        public func peripheral(_: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+            guard error == nil else { return }
+            delegate?.peripheral(self, didReadRSSI: RSSI.intValue)
+        }
     }
 
     public protocol PickleLinkPeripheralDelegate: AnyObject {
@@ -143,5 +148,6 @@ import Foundation
         func peripheral(_ p: PickleLinkPeripheral, didReceiveResponse data: Data)
         func peripheral(_ p: PickleLinkPeripheral, didReceiveStatusEvent event: StatusEvent)
         func peripheral(_ p: PickleLinkPeripheral, didFailWith error: Error)
+        func peripheral(_ p: PickleLinkPeripheral, didReadRSSI rssi: Int)
     }
 #endif

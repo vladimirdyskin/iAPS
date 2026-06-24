@@ -72,7 +72,23 @@
         private func decode(_ raw: Data, after startDate: Date) throws -> ([TimestampedHistoryEvent], hasMore: Bool) {
             // GET_HISTORY may return short data on a stubbed/empty page — skip gracefully.
             guard raw.count >= 1022 else { return ([], false) }
-            let page = try HistoryPage(pageData: raw, pumpModel: pumpModel)
+
+            // Прошивка валидирует CRC на устройстве и шлёт 1022 байта данных БЕЗ CRC.
+            // HistoryPage.init ожидает 1024 байта (1022 данных + 2 байта CRC BE).
+            // Если получили ровно 1022 — пересчитываем CRC и дописываем 2 байта.
+            // Если >= 1024 — прошивка уже включила CRC, используем как есть (forward-compat).
+            var pageData: Data
+            if raw.count < 1024 {
+                let crc = pickleComputeCRC16(raw)
+                pageData = raw
+                pageData.append(UInt8(crc >> 8)) // hi byte BE
+                pageData.append(UInt8(crc & 0xFF)) // lo byte BE
+            } else {
+                pageData = raw
+            }
+
+            guard pageData.count >= 1024 else { return ([], false) }
+            let page = try HistoryPage(pageData: pageData, pumpModel: pumpModel)
             let result = page.timestampedEvents(after: startDate, timeZone: timeZone, model: pumpModel)
             return (result.events, result.hasMoreEvents && !result.cancelledEarly)
         }

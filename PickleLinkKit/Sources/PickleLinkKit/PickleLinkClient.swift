@@ -6,7 +6,10 @@ import Foundation
 public actor PickleLinkClient {
     private let session: CommandSession
 
-    public init(transport: CommandTransport, defaultTimeout: TimeInterval = 10.0) {
+    // 20с: мост будит помпу перед каждой командой (wakeIfNeeded), worst-case
+    // wakeup прошивки ~12.75с (burst + listen PowerAck 12с + long PowerOn) + сама
+    // команда. 10с было меньше worst-case wakeup → iOS сдавался раньше прошивки.
+    public init(transport: CommandTransport, defaultTimeout: TimeInterval = 20.0) {
         self.session = CommandSession(transport: transport, defaultTimeout: defaultTimeout)
     }
 
@@ -131,5 +134,33 @@ public actor PickleLinkClient {
     /// 0x14 — GET_HISTORY_INFO.
     public func getHistoryInfo() async throws -> HistoryInfo {
         try await session.send(.getHistoryInfo, decode: SmartBridgeDecode.historyInfo)
+    }
+
+    /// 0x15 — SET_CLOCK. Синхронизирует часы помпы с локальным временем устройства.
+    public func setClock(date: Date = Date()) async throws {
+        _ = try await session.send(.setClock, params: SCMDParams.setClock(from: date))
+    }
+
+    /// 0x16 — SET_BASAL_SCHEDULE. Пишет расписание базала (макс 48 записей).
+    /// Таймаут повышен до 30с — многокадровая запись + wakeup, как getHistory.
+    public func setBasalSchedule(
+        entries: [(rateMilliunitsPerHour: UInt32, offsetMinutes: UInt16)],
+        timeout: TimeInterval = 30.0
+    ) async throws {
+        _ = try await session.send(
+            .setBasalSchedule,
+            params: SCMDParams.setBasalSchedule(entries: entries),
+            timeout: timeout
+        )
+    }
+
+    /// 0x17 — SET_MAX_BASAL.
+    public func setMaxBasal(rateMilliunitsPerHour: UInt32) async throws {
+        _ = try await session.send(.setMaxBasal, params: SCMDParams.setMaxBasal(rateMilliunitsPerHour: rateMilliunitsPerHour))
+    }
+
+    /// 0x18 — SET_MAX_BOLUS.
+    public func setMaxBolus(amountMilliunits: UInt32) async throws {
+        _ = try await session.send(.setMaxBolus, params: SCMDParams.setMaxBolus(amountMilliunits: amountMilliunits))
     }
 }

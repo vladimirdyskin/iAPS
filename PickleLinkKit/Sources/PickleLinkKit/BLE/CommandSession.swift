@@ -8,7 +8,8 @@ public actor CommandSession {
     private var outstanding: [UInt8: Pending] = [:]
     private let defaultTimeout: TimeInterval
 
-    public init(transport: CommandTransport, defaultTimeout: TimeInterval = 10.0) {
+    // 20с — покрывает worst-case wakeup прошивки (~12.75с) + команду (см. PickleLinkClient).
+    public init(transport: CommandTransport, defaultTimeout: TimeInterval = 20.0) {
         self.transport = transport
         self.defaultTimeout = defaultTimeout
     }

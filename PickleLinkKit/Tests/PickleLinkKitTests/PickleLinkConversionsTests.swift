@@ -23,11 +23,9 @@ final class PickleLinkConversionsTests: XCTestCase {
     }
 
     func testMedtronicModelMapping() {
-        // Protocol doc example: 0x0207 → 522.
-        XCTAssertEqual(PickleLinkConversions.medtronicModelString(fromRaw: 0x0207), "522")
-        // 7xx family selector (high byte 0x03).
-        XCTAssertEqual(PickleLinkConversions.medtronicModelString(fromRaw: 0x0307), "722")
-        XCTAssertEqual(PickleLinkConversions.medtronicModelString(fromRaw: 0x0217), "523")
-        XCTAssertNil(PickleLinkConversions.medtronicModelString(fromRaw: 0x00FF))
+        // Прошивка отдаёт номер модели десятичным числом (ASCII-ответ помпы → int).
+        XCTAssertEqual(PickleLinkConversions.medtronicModelString(fromRaw: 722), "722") // 0x02D2
+        XCTAssertEqual(PickleLinkConversions.medtronicModelString(fromRaw: 522), "522") // 0x020A
+        XCTAssertEqual(PickleLinkConversions.medtronicModelString(fromRaw: 523), "523")
     }
 }

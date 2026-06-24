@@ -36,7 +36,9 @@
 
         // MARK: - BLE / transport
 
-        private let bleManager: PickleLinkBLEManager
+        /// Публичный доступ нужен PickleLinkListDataSource (UI) — DataSource использует
+        /// этот же менеджер, второй CBCentralManager не создаётся.
+        public private(set) var bleManager: PickleLinkBLEManager
         private var peripheral: PickleLinkPeripheral?
         private var client: PickleLinkClient?
 
@@ -46,6 +48,9 @@
 
         private let statusObservers = NSHashTable<AnyObject>.weakObjects()
         private var statusObserverQueues: [ObjectIdentifier: DispatchQueue] = [:]
+
+        private let stateObservers = NSHashTable<AnyObject>.weakObjects()
+        private var stateObserverQueues: [ObjectIdentifier: DispatchQueue] = [:]
 
         private weak var lockedDelegate: PumpManagerDelegate?
         private var lockedDelegateQueue: DispatchQueue?
@@ -71,6 +76,9 @@
             super.init()
             bleManager.delegate = self
             if let id = state.peripheralIdentifier {
+                // Помечаем мост активной помпы — он реконнектится при обрыве
+                // вне зависимости от UI-тоггла autoconnect.
+                bleManager.markAsPumpPeripheral(id: id)
                 bleManager.connect(id: id)
             }
         }
@@ -107,7 +115,7 @@
             return PumpManagerStatus(
                 timeZone: s.timeZone,
                 device: hkDevice,
-                pumpBatteryChargeRemaining: nil,
+                pumpBatteryChargeRemaining: s.pumpBatteryChargeRemaining,
                 basalDeliveryState: basal,
                 bolusState: bolus,
                 insulinType: s.insulinType
@@ -127,6 +135,11 @@
                 guard let observer = obj as? PumpManagerStatusObserver else { continue }
                 let q = statusObserverQueues[ObjectIdentifier(obj)] ?? .main
                 q.async { observer.pumpManager(self, didUpdate: newStatus, oldStatus: oldStatus) }
+            }
+            for obj in stateObservers.allObjects {
+                guard let observer = obj as? PickleLinkPumpManagerStateObserver else { continue }
+                let q = stateObserverQueues[ObjectIdentifier(obj)] ?? .main
+                q.async { observer.didUpdatePumpManagerState(snapshot) }
             }
         }
 
@@ -222,6 +235,16 @@
             statusObserverQueues[ObjectIdentifier(observer)] = nil
         }
 
+        public func addStateObserver(_ observer: PickleLinkPumpManagerStateObserver, queue: DispatchQueue) {
+            stateObservers.add(observer)
+            stateObserverQueues[ObjectIdentifier(observer)] = queue
+        }
+
+        public func removeStateObserver(_ observer: PickleLinkPumpManagerStateObserver) {
+            stateObservers.remove(observer)
+            stateObserverQueues[ObjectIdentifier(observer)] = nil
+        }
+
         public func setMustProvideBLEHeartbeat(_: Bool) {}
 
         // MARK: Bolus
@@ -278,8 +301,20 @@
         }
 
         public func cancelBolus(completion: @escaping (PumpManagerResult<DoseEntry?>) -> Void) {
-            // Smart Bridge has no bolus-cancel command; report failure so Loop keeps the dose.
-            completion(.failure(.deviceState(nil)))
+            // Прерываем болюс через suspend (0x0E) — как MinimedKit cancelBolus:1333.
+            // Болюс не идемпотентен: suspend гарантированно останавливает подачу.
+            Task {
+                do {
+                    try await requireClient().suspend() // 0x0E
+                    self.mutateState {
+                        $0.suspendState = .suspended(Date())
+                        $0.unfinalizedBolus = nil
+                    }
+                    completion(.success(nil))
+                } catch {
+                    completion(.failure(.communication(nil)))
+                }
+            }
         }
 
         // MARK: Temp basal
@@ -338,6 +373,16 @@
             }
         }
 
+        /// Синхронизирует часы помпы с локальным временем устройства (SCMD 0x15).
+        public func syncPumpTime(date: Date = Date(), completion: ((Error?) -> Void)? = nil) {
+            Task {
+                do {
+                    try await requireClient().setClock(date: date) // 0x15
+                    completion?(nil)
+                } catch { completion?(error) }
+            }
+        }
+
         // MARK: Pump data refresh
 
         public func ensureCurrentPumpData(completion: ((Date?) -> Void)?) {
@@ -350,7 +395,13 @@
                             $0.suspendState = st.suspended ? .suspended(Date()) : .resumed(Date())
                         }
                     }
-                    _ = try? await c.getBattery() // 0x04
+                    if let battery = try? await c.getBattery() { // 0x04
+                        // Щелочная AAA Medtronic: min=1180 mV, max=1470 mV.
+                        // Источник: MinimedKit/BatteryChemistryType.swift alkaline
+                        // (min=1.18V, max=1.47V) — линейная интерполяция, как в MinimedKit.
+                        let pct = max(0.0, min(1.0, (Double(battery.millivolts) - 1180.0) / 290.0))
+                        self.mutateState { $0.pumpBatteryChargeRemaining = pct }
+                    }
                     if let res = try? await c.getReservoir() { // 0x05
                         self.mutateState { $0.reservoirUnits = res.units }
                         self.reportReservoir(res.units)
@@ -364,20 +415,65 @@
         }
 
         public func syncBasalRateSchedule(
-            items _: [RepeatingScheduleValue<Double>],
+            items: [RepeatingScheduleValue<Double>],
             completion: @escaping (Result<BasalRateSchedule, Error>) -> Void
         ) {
-            // Read-back only — firmware does not accept a basal profile write (0x0C is read).
+            // 1. Конвертируем LoopKit items → wire entries для SCMD 0x16.
+            //    item.startTime — секунды от полуночи (TimeInterval).
+            //    item.value    — U/h.
+            //    Прошивка ожидает: rate_mU(u32 BE), offset_min(u16 BE).
+            let wireEntries = items.map { item -> (rateMilliunitsPerHour: UInt32, offsetMinutes: UInt16) in
+                let rateMu = PickleLinkConversions.unitsToMilliunits(item.value)
+                let offsetMin = UInt16((item.startTime / 60.0).rounded())
+                return (rateMu, offsetMin)
+            }
+
             Task {
                 do {
-                    let entries = try await requireClient().getBasalRates() // 0x0C
-                    let items = entries.map {
-                        RepeatingScheduleValue<Double>(
-                            startTime: TimeInterval($0.startSeconds),
-                            value: PickleLinkConversions.milliunitsToUnits($0.rateMu)
+                    let c = try requireClient()
+
+                    // 2. Запись расписания на помпу (0x16).
+                    try await c.setBasalSchedule(entries: wireEntries)
+
+                    // 3. Read-back верификация (безопасность — медустройство).
+                    //    GET_BASAL_RATES (0x0C) возвращает BasalRateEntry с startSeconds.
+                    //    offset_min × 60 должно совпадать с startSeconds.
+                    let readback = try await c.getBasalRates() // 0x0C
+
+                    guard readback.count == wireEntries.count else {
+                        os_log(
+                            "Basal schedule verify FAILED: sent %d entries, got %d back",
+                            log: self.log, type: .error,
+                            wireEntries.count, readback.count
                         )
+                        completion(.failure(PumpManagerError.configuration(nil)))
+                        return
                     }
-                    if let schedule = BasalRateSchedule(dailyItems: items, timeZone: self.state.timeZone) {
+
+                    for i in readback.indices {
+                        let sent = wireEntries[i]
+                        let got = readback[i]
+                        let expectedSeconds = UInt32(sent.offsetMinutes) * 60
+                        let rateDiff = sent.rateMilliunitsPerHour > got.rateMu
+                            ? sent.rateMilliunitsPerHour - got.rateMu
+                            : got.rateMu - sent.rateMilliunitsPerHour
+                        guard got.startSeconds == expectedSeconds, rateDiff <= 1 else {
+                            os_log(
+                                "Basal schedule verify FAILED at entry %d: sent rate=%d offset=%dmin, got rate=%d start=%ds",
+                                log: self.log, type: .error,
+                                i, sent.rateMilliunitsPerHour, sent.offsetMinutes,
+                                got.rateMu, got.startSeconds
+                            )
+                            completion(.failure(PumpManagerError.configuration(nil)))
+                            return
+                        }
+                    }
+
+                    // 4. Верификация прошла — формируем расписание из записанных значений.
+                    let verifiedItems = items
+                    if let schedule = BasalRateSchedule(dailyItems: verifiedItems, timeZone: self.state.timeZone) {
+                        // Сохраняем для UI: отображение плановой скорости в SettingsViewModel.
+                        self.mutateState { $0.basalSchedule = schedule }
                         completion(.success(schedule))
                     } else {
                         completion(.failure(PumpManagerError.configuration(nil)))
@@ -390,10 +486,26 @@
             limits deliveryLimits: DeliveryLimits,
             completion: @escaping (Result<DeliveryLimits, Error>) -> Void
         ) {
-            // 0x0B is read-only; echo requested limits back (no write path on firmware).
             Task {
-                _ = try? await requireClient().getSettings() // 0x0B (diagnostic read)
-                completion(.success(deliveryLimits))
+                do {
+                    let c = try requireClient()
+
+                    // maximumBasalRate: HKQuantity в U/h → rate_mU = U/h × 1000 (0x17).
+                    if let hkBasal = deliveryLimits.maximumBasalRate {
+                        let rateUh = hkBasal.doubleValue(for: HKUnit.internationalUnit().unitDivided(by: .hour()))
+                        let rateMu = PickleLinkConversions.unitsToMilliunits(rateUh)
+                        try await c.setMaxBasal(rateMilliunitsPerHour: rateMu)
+                    }
+
+                    // maximumBolus: HKQuantity в U → amount_mU = U × 1000 (0x18).
+                    if let hkBolus = deliveryLimits.maximumBolus {
+                        let amountU = hkBolus.doubleValue(for: .internationalUnit())
+                        let amountMu = PickleLinkConversions.unitsToMilliunits(amountU)
+                        try await c.setMaxBolus(amountMilliunits: amountMu)
+                    }
+
+                    completion(.success(deliveryLimits))
+                } catch { completion(.failure(error)) }
             }
         }
 
@@ -462,7 +574,13 @@
     extension PickleLinkPumpManager: PickleLinkBLEManagerDelegate, PickleLinkPeripheralDelegate {
         public func bleManager(_: PickleLinkBLEManager, didUpdateState _: CBManagerState) {}
 
-        public func bleManager(_: PickleLinkBLEManager, didUpdateDiscovered _: [DiscoveredDevice]) {}
+        public func bleManager(_: PickleLinkBLEManager, didUpdateDiscovered devices: [DiscoveredDevice]) {
+            NotificationCenter.default.post(
+                name: .PickleLinkDiscoveredDevicesDidChange,
+                object: self,
+                userInfo: ["devices": devices]
+            )
+        }
 
         public func bleManager(_: PickleLinkBLEManager, didConnect peripheral: PickleLinkPeripheral) {
             self.peripheral = peripheral
@@ -524,5 +642,26 @@
         public func peripheral(_: PickleLinkPeripheral, didFailWith error: Error) {
             os_log("Peripheral failure: %{public}@", log: log, type: .error, String(describing: error))
         }
+
+        public func peripheral(_ p: PickleLinkPeripheral, didReadRSSI rssi: Int) {
+            // Обновляем RSSI в discovered и уведомляем делегата BLE-менеджера (DataSource слушает).
+            bleManager.updateDiscoveredRSSI(id: p.peripheral.identifier, rssi: rssi)
+        }
+    }
+
+    // MARK: - State observer protocol
+
+    public protocol PickleLinkPumpManagerStateObserver: AnyObject {
+        func didUpdatePumpManagerState(_ state: PickleLinkPumpManagerState)
+    }
+
+    // MARK: - Notification names
+
+    public extension Notification.Name {
+        /// Постится когда BLEManager обновляет список найденных/подключённых устройств.
+        /// userInfo["devices"] = [DiscoveredDevice]
+        static let PickleLinkDiscoveredDevicesDidChange = Notification.Name(
+            "com.pickle.PickleLinkKit.DiscoveredDevicesDidChange"
+        )
     }
 #endif

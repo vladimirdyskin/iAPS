@@ -84,6 +84,7 @@
             defer { busy = false }
             do {
                 try await c.configurePump(id: pumpID) // 0x01
+                try? await c.setFrequency(hz: 868_350_000) // 0x11 — рабочая частота 868.35 МГц ДО чтения модели
                 let raw = try await c.getModel() // 0x03
                 guard let modelStr = PickleLinkConversions.medtronicModelString(fromRaw: raw),
                       let model = PumpModel(rawValue: modelStr)
@@ -92,6 +93,8 @@
                     return
                 }
                 pumpModel = model
+                // Синхронизируем часы помпы при настройке (SCMD 0x15 SET_CLOCK).
+                try? await c.setClock() // 0x15 — не блокирует онбординг при ошибке
                 phase = .frequency
             } catch {
                 errorMessage = "CONFIGURE_PUMP failed: \(error)"
@@ -131,7 +134,13 @@
         weak var model: PickleLinkSetupModel?
         var client: PickleLinkClient?
 
-        func bleManager(_: PickleLinkBLEManager, didUpdateState _: CBManagerState) {}
+        func bleManager(_ m: PickleLinkBLEManager, didUpdateState state: CBManagerState) {
+            // CBCentralManager инициализируется асинхронно. startScan() из onAppear
+            // мог прийти ДО poweredOn и молча выйти по guard — перезапускаем скан,
+            // когда BLE реально готов (иначе «Поиск...» висит вечно).
+            if state == .poweredOn { m.startScan() }
+        }
+
         func bleManager(_: PickleLinkBLEManager, didUpdateDiscovered devices: [DiscoveredDevice]) {
             Task { @MainActor in self.model?.devices = devices.sorted { $0.rssi > $1.rssi } }
         }
@@ -161,5 +170,8 @@
         func peripheral(_: PickleLinkPeripheral, didFailWith error: Error) {
             Task { @MainActor in self.model?.errorMessage = String(describing: error) }
         }
+
+        // RSSI во время онбординга не нужен
+        func peripheral(_: PickleLinkPeripheral, didReadRSSI _: Int) {}
     }
 #endif

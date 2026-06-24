@@ -10,6 +10,8 @@ import MockKit
 import OmniBLE
 import OmniKit
 import os.log
+import PickleLinkKit
+import PickleLinkKitUI
 import ShareClient
 import SwiftDate
 import Swinject
@@ -71,11 +73,13 @@ private let staticCGMManagersByIdentifier: [String: CGMManager.Type] = [
 ]
 
 private let staticPumpManagersByIdentifier: [String: PumpManagerUI.Type] = [
-    MockPumpManager.pluginIdentifier: MockPumpManager.self
+    MockPumpManager.pluginIdentifier: MockPumpManager.self,
+    PickleLinkPumpManager.pluginIdentifier: PickleLinkPumpManager.self
 ]
 
 private let availableStaticPumpManagers: [PumpManagerDescriptor] = [
-    PumpManagerDescriptor(identifier: MockPumpManager.pluginIdentifier, localizedTitle: MockPumpManager.localizedTitle)
+    PumpManagerDescriptor(identifier: MockPumpManager.pluginIdentifier, localizedTitle: MockPumpManager.localizedTitle),
+    PumpManagerDescriptor(identifier: PickleLinkPumpManager.pluginIdentifier, localizedTitle: "PickleLink")
 ]
 
 final class BaseDeviceDataManager: Injectable, DeviceDataManager {

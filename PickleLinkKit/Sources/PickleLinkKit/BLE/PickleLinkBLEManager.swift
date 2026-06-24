@@ -5,8 +5,10 @@ import Foundation
     public struct DiscoveredDevice: Equatable {
         public let id: UUID
         public let name: String?
-        public let rssi: Int
+        public var rssi: Int
         public let discoveredAt: Date
+        /// true если на данный момент есть активное BLE-соединение с этим устройством
+        public var isConnected: Bool
     }
 
     public protocol PickleLinkBLEManagerDelegate: AnyObject {
@@ -29,6 +31,64 @@ import Foundation
         // CoreBluetooth silently drops connections if the CBPeripheral is not
         // strongly retained — keep discovered/connecting peripherals here.
         private var peripheralRefs: [UUID: CBPeripheral] = [:]
+
+        // UUID «главного» периферийного устройства (активная помпа).
+        // Реконнектится при обрыве вне зависимости от UI-тоггла autoconnect.
+        private var pumpPeripheralID: UUID?
+
+        /// Вызывается PumpManager при инициализации, чтобы пометить мост активной помпы.
+        /// Этот id всегда переподключается при обрыве.
+        public func markAsPumpPeripheral(id: UUID) {
+            pumpPeripheralID = id
+        }
+
+        // MARK: - Autoconnect memory
+
+        // Набор UUID, которые пользователь пометил «автоподключать».
+        // Хранится в UserDefaults под ключом, привязанным к restoreID.
+        private var autoconnectIDs: Set<UUID> {
+            get {
+                let key = "\(restoreID).autoconnect"
+                let strings = UserDefaults.standard.stringArray(forKey: key) ?? []
+                return Set(strings.compactMap { UUID(uuidString: $0) })
+            }
+            set {
+                let key = "\(restoreID).autoconnect"
+                UserDefaults.standard.set(newValue.map(\.uuidString), forKey: key)
+            }
+        }
+
+        public func shouldConnect(id: UUID) -> Bool {
+            autoconnectIDs.contains(id)
+        }
+
+        public func setAutoconnect(id: UUID, _ enabled: Bool) {
+            var ids = autoconnectIDs
+            if enabled {
+                ids.insert(id)
+                autoconnectIDs = ids
+                connect(id: id)
+            } else {
+                ids.remove(id)
+                autoconnectIDs = ids
+                disconnect(id: id)
+            }
+        }
+
+        /// Запросить RSSI у всех подключённых периферий.
+        /// Результат придёт через PickleLinkPeripheralDelegate.peripheral(_:didReadRSSI:).
+        public func updateRSSI() {
+            for (_, plp) in connected {
+                plp.peripheral.readRSSI()
+            }
+        }
+
+        /// Вызывается из PickleLinkPumpManager.peripheral(_:didReadRSSI:).
+        /// Обновляет RSSI в discovered и уведомляет делегата (DataSource пересобирает список).
+        public func updateDiscoveredRSSI(id: UUID, rssi: Int) {
+            discovered[id]?.rssi = rssi
+            delegate?.bleManager(self, didUpdateDiscovered: Array(discovered.values))
+        }
 
         public init(restoreIdentifier: String = "com.pickle.PickleLinkKit.central") {
             restoreID = restoreIdentifier
@@ -90,11 +150,13 @@ import Foundation
             rssi RSSI: NSNumber
         )
         {
+            let alreadyConnected = connected[peripheral.identifier] != nil
             let dev = DiscoveredDevice(
                 id: peripheral.identifier,
                 name: peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String,
                 rssi: RSSI.intValue,
-                discoveredAt: Date()
+                discoveredAt: Date(),
+                isConnected: alreadyConnected
             )
             peripheralRefs[peripheral.identifier] = peripheral
             discovered[dev.id] = dev
@@ -105,8 +167,23 @@ import Foundation
             pendingConnectIDs.remove(peripheral.identifier)
             let plp = PickleLinkPeripheral(peripheral: peripheral)
             connected[peripheral.identifier] = plp
+            // Если устройство не было обнаружено через скан (например, мост помпы был
+            // подключён через retrievePeripherals в init PumpManager, минуя didDiscover),
+            // создаём запись в discovered вручную.
+            if discovered[peripheral.identifier] != nil {
+                discovered[peripheral.identifier]?.isConnected = true
+            } else {
+                discovered[peripheral.identifier] = DiscoveredDevice(
+                    id: peripheral.identifier,
+                    name: peripheral.name,
+                    rssi: 0,
+                    discoveredAt: Date(),
+                    isConnected: true
+                )
+            }
             plp.discoverEverything()
             delegate?.bleManager(self, didConnect: plp)
+            delegate?.bleManager(self, didUpdateDiscovered: Array(discovered.values))
         }
 
         public func centralManager(
@@ -126,9 +203,14 @@ import Foundation
         )
         {
             connected.removeValue(forKey: peripheral.identifier)
+            discovered[peripheral.identifier]?.isConnected = false
             delegate?.bleManager(self, didDisconnect: peripheral.identifier, error: error)
-            // Auto-reconnect: simple immediate reconnect attempt.
-            central.connect(peripheral, options: nil)
+            delegate?.bleManager(self, didUpdateDiscovered: Array(discovered.values))
+            // Auto-reconnect: мост активной помпы реконнектится всегда;
+            // остальные устройства — только если помечены пользователем через UI.
+            if peripheral.identifier == pumpPeripheralID || shouldConnect(id: peripheral.identifier) {
+                central.connect(peripheral, options: nil)
+            }
         }
     }
 #endif

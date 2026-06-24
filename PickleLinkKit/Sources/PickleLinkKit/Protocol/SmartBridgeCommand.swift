@@ -23,6 +23,10 @@ public enum SCMD: UInt8, CaseIterable, Sendable {
     case getStatistics = 0x12
     case ping = 0x13
     case getHistoryInfo = 0x14
+    case setClock = 0x15
+    case setBasalSchedule = 0x16
+    case setMaxBasal = 0x17
+    case setMaxBolus = 0x18
 }
 
 /// Wire frame: `[seq][cmd_id][params...]`
@@ -78,6 +82,49 @@ public enum SCMDParams {
     public static func setFrequency(hz: UInt32) -> Data {
         var d = Data(capacity: 4)
         d.appendLE(hz)
+        return d
+    }
+
+    /// 0x16 SET_BASAL_SCHEDULE: `count(u8)` + count×`[rate_mU(u32 BE), offset_min(u16 BE)]`. Макс 48 записей.
+    public static func setBasalSchedule(entries: [(rateMilliunitsPerHour: UInt32, offsetMinutes: UInt16)]) -> Data {
+        var d = Data(capacity: 1 + entries.count * 6)
+        d.append(UInt8(entries.count))
+        for e in entries {
+            d.appendBE(e.rateMilliunitsPerHour)
+            d.appendBE(e.offsetMinutes)
+        }
+        return d
+    }
+
+    /// 0x17 SET_MAX_BASAL: `rate_mU(u32 BE)`.
+    public static func setMaxBasal(rateMilliunitsPerHour: UInt32) -> Data {
+        var d = Data(capacity: 4)
+        d.appendBE(rateMilliunitsPerHour)
+        return d
+    }
+
+    /// 0x18 SET_MAX_BOLUS: `amount_mU(u32 BE)`.
+    public static func setMaxBolus(amountMilliunits: UInt32) -> Data {
+        var d = Data(capacity: 4)
+        d.appendBE(amountMilliunits)
+        return d
+    }
+
+    /// 0x15 SET_CLOCK: `[hour][minute][second][year_hi][year_lo][month][day]` — 7 байт.
+    /// Порядок подтверждён MinimedKit/ChangeTimeCarelinkMessageBody.swift (cmd 0x40).
+    /// Компоненты берутся из локального времени устройства (Calendar.current).
+    public static func setClock(from date: Date) -> Data {
+        let cal = Calendar.current
+        let comps = cal.dateComponents([.hour, .minute, .second, .year, .month, .day], from: date)
+        let year = UInt16(comps.year ?? 2000)
+        var d = Data(capacity: 7)
+        d.append(UInt8(comps.hour ?? 0))
+        d.append(UInt8(comps.minute ?? 0))
+        d.append(UInt8(comps.second ?? 0))
+        d.append(UInt8((year >> 8) & 0xFF)) // year_hi BE
+        d.append(UInt8(year & 0xFF)) // year_lo BE
+        d.append(UInt8(comps.month ?? 1))
+        d.append(UInt8(comps.day ?? 1))
         return d
     }
 }

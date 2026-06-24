@@ -39,9 +39,11 @@
         override func viewDidLoad() {
             super.viewDidLoad()
             if let pm = existingPumpManager {
-                push(UIHostingController(rootView: PickleLinkSettingsView(pumpManager: pm) { [weak self] in
-                    self?.finish()
-                }))
+                let vm = PickleLinkSettingsViewModel(pumpManager: pm)
+                vm.didFinish = { [weak self] in self?.finish() }
+                let dataSource = PickleLinkListDataSource(pumpManager: pm)
+                let view = PickleLinkNativeSettingsView(viewModel: vm, listDataSource: dataSource)
+                push(UIHostingController(rootView: view))
             } else {
                 push(UIHostingController(rootView: ScanView(model: model)))
             }
