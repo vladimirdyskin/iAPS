@@ -51,7 +51,15 @@ public actor CommandSession {
                 throw SmartBridgeError.timeout
             }
             // Fire write
-            try await transport.sendCommand(frame)
+            do {
+                try await transport.sendCommand(frame)
+            } catch {
+                // Запись не удалась — снять зарегистрированный awaitResponse, иначе его
+                // continuation не возобновится (таймаут-таска отменяется вместе с группой)
+                // → send зависнет навсегда.
+                await self.cancel(seq: seq, with: .notConnected)
+                throw error
+            }
             let result = try await group.next()!
             group.cancelAll()
             return result

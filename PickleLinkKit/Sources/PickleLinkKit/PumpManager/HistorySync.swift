@@ -17,17 +17,18 @@
         /// Walk history from `state.lastSyncedHistoryPage` up to the current page.
         ///
         /// - `startDate`: events on/before this are ignored (Loop filter date).
-        /// - Handles the firmware's known 0x14 stub (currentPage=0/max=35) by falling
-        ///   back to a MinimedKit-style walk: keep reading older pages until a page
-        ///   yields no events after `startDate`.
+        /// - Прошивка не имеет реального указателя страниц Medtronic — getHistoryInfo
+        ///   (0x14) всегда заглушка (currentPage=0, pageOffset=0). Поэтому всегда идём
+        ///   MinimedKit-walk'ом: читаем страницы с 0, пока страница даёт события после
+        ///   startDate (back-pressure по hasMore).
         func sync(lastSyncedPage: UInt8, after startDate: Date) async throws -> Result {
             let info = try? await client.getHistoryInfo()
 
-            // Detect stub: currentPage==0 with maxPage at the documented x22/x23 stub value (35),
-            // or pageOffset==0 — treat as "info unavailable, walk pages".
+            // Прошивка всегда отдаёт заглушку (currentPage=0, pageOffset=0) — реального
+            // указателя страниц у Medtronic нет. Любой такой ответ → walk с нуля.
             let infoLooksStubbed: Bool = {
                 guard let info else { return true }
-                return info.currentPage == 0 && info.maxPage == 35 && info.pageOffset == 0
+                return info.currentPage == 0 && info.pageOffset == 0
             }()
 
             var collected: [TimestampedHistoryEvent] = []
@@ -70,13 +71,13 @@
         /// Decode a raw page; returns its timestamped events after `startDate`
         /// and whether the page suggests more (older) events exist.
         private func decode(_ raw: Data, after startDate: Date) throws -> ([TimestampedHistoryEvent], hasMore: Bool) {
-            // GET_HISTORY may return short data on a stubbed/empty page — skip gracefully.
-            guard raw.count >= 1022 else { return ([], false) }
+            // Валидны только 1022 (данные без CRC) или ≥1024 (с CRC). 1023 — битая
+            // длина, иначе дописанный CRC даст 1025 байт парсеру. Короткое → пропуск.
+            guard raw.count == 1022 || raw.count >= 1024 else { return ([], false) }
 
-            // Прошивка валидирует CRC на устройстве и шлёт 1022 байта данных БЕЗ CRC.
-            // HistoryPage.init ожидает 1024 байта (1022 данных + 2 байта CRC BE).
-            // Если получили ровно 1022 — пересчитываем CRC и дописываем 2 байта.
-            // Если >= 1024 — прошивка уже включила CRC, используем как есть (forward-compat).
+            // Прошивка шлёт 1024 = 1022 данных + 2 байта CRC16 BE (валидирует на устройстве).
+            // HistoryPage.init ожидает 1024. Если пришло ровно 1022 (старая прошивка) —
+            // пересчитываем CRC и дописываем. Если ≥1024 — используем как есть.
             var pageData: Data
             if raw.count < 1024 {
                 let crc = pickleComputeCRC16(raw)

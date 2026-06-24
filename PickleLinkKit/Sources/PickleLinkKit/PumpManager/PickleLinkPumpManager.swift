@@ -39,8 +39,33 @@
         /// Публичный доступ нужен PickleLinkListDataSource (UI) — DataSource использует
         /// этот же менеджер, второй CBCentralManager не создаётся.
         public private(set) var bleManager: PickleLinkBLEManager
-        private var peripheral: PickleLinkPeripheral?
-        private var client: PickleLinkClient?
+
+        // MARK: Пул мостов (роуминг по нескольким равнозначным мостам одной помпы)
+
+        /// Один подключённый мост: транспорт + сессия + последний RSSI + готовность.
+        private final class BridgeLink {
+            let id: UUID
+            let peripheral: PickleLinkPeripheral
+            let client: PickleLinkClient
+            var rssi: Int = -127
+            var ready = false
+            init(_ p: PickleLinkPeripheral) {
+                id = p.peripheral.identifier
+                peripheral = p
+                client = PickleLinkClient(transport: p)
+            }
+        }
+
+        private let poolLock = NSLock()
+        private var bridges: [UUID: BridgeLink] = [:] // все подключённые мосты
+        private var activeBridgeID: UUID? // через кого сейчас шлём команды
+        private var rssiTimer: DispatchSourceTimer?
+
+        /// Переключаемся на другой мост, только если он сильнее активного на эту
+        /// величину (dBm) — антидребезг при близких уровнях. Реактивный фейловер
+        /// при обрыве срабатывает всегда, без гистерезиса.
+        private let rssiHysteresisDb = 15
+        private let rssiPollSeconds = 3
 
         private let hkDevice: HKDevice
 
@@ -146,8 +171,50 @@
         // MARK: - Client access
 
         private func requireClient() throws -> PickleLinkClient {
-            guard let c = client else { throw PumpManagerError.connection(nil) }
-            return c
+            poolLock.lock()
+            defer { poolLock.unlock() }
+            if let id = activeBridgeID, let b = bridges[id], b.ready { return b.client }
+            // Активный мост пропал — мгновенный фейловер на лучший готовый.
+            if let best = bridges.values.filter({ $0.ready }).max(by: { $0.rssi < $1.rssi }) {
+                activeBridgeID = best.id
+                return best.client
+            }
+            throw PumpManagerError.connection(nil)
+        }
+
+        /// Выбор активного моста: лучший RSSI среди готовых, со сменой только при
+        /// превышении гистерезиса (чтобы не дёргалось при близких уровнях).
+        private func selectActiveBridge() {
+            poolLock.lock()
+            defer { poolLock.unlock() }
+            let ready = bridges.values.filter { $0.ready }
+            guard let best = ready.max(by: { $0.rssi < $1.rssi }) else {
+                activeBridgeID = nil
+                return
+            }
+            if let cur = activeBridgeID, let curB = bridges[cur], curB.ready {
+                if best.id != cur, best.rssi - curB.rssi >= rssiHysteresisDb {
+                    activeBridgeID = best.id
+                }
+            } else {
+                activeBridgeID = best.id
+            }
+        }
+
+        private func startRSSIPolling() {
+            guard rssiTimer == nil else { return }
+            let t = DispatchSource.makeTimerSource(queue: .main)
+            t.schedule(deadline: .now() + .seconds(rssiPollSeconds), repeating: .seconds(rssiPollSeconds))
+            t.setEventHandler { [weak self] in
+                self?.bleManager.updateRSSI() // → didReadRSSI → selectActiveBridge
+            }
+            t.resume()
+            rssiTimer = t
+        }
+
+        private func stopRSSIPolling() {
+            rssiTimer?.cancel()
+            rssiTimer = nil
         }
 
         /// Diagnostic accessor for the settings UI (0x12 GET_STATISTICS).
@@ -273,21 +340,21 @@
                 do {
                     let c = try requireClient()
                     let mu = PickleLinkConversions.unitsToMilliunits(units)
+                    // Снимок state ДО await — pumpModel/insulinType не должны «уехать».
+                    let pumpModel = self.state.pumpModel
+                    let insulinType = self.state.insulinType
                     let start = Date()
                     try await c.bolus(amountMilliunits: mu)
 
-                    // Post-bolus confirmation (protocol §0x0D): the firmware does this,
-                    // but verify on the plugin side too.
-                    let status = try? await c.getStatus()
-                    if let status, !status.bolusing {
-                        completion(.deviceState(nil))
-                        return
-                    }
-
-                    let duration = self.state.pumpModel.bolusDeliveryTime(units: units)
+                    // Болюс 0x0D принят помпой → НЕМЕДЛЕННО фиксируем дозу. Болюс НЕ
+                    // идемпотентен: если не записать, Loop сочтёт его несостоявшимся и
+                    // повторит → двойная доза. Подтверждение статусом — best-effort и
+                    // НЕ основание считать болюс неудачным (малая доза может пройти
+                    // быстрее, чем придёт bolusing=true).
+                    let duration = pumpModel.bolusDeliveryTime(units: units)
                     let dose = UnfinalizedDose(
                         bolusAmount: units, startTime: start, duration: duration,
-                        insulinType: self.state.insulinType,
+                        insulinType: insulinType,
                         automatic: activationType.isAutomatic
                     )
                     self.mutateState { $0.unfinalizedBolus = dose }
@@ -583,27 +650,51 @@
         }
 
         public func bleManager(_: PickleLinkBLEManager, didConnect peripheral: PickleLinkPeripheral) {
-            self.peripheral = peripheral
             peripheral.delegate = self
-            // One BLEManager → one peripheral → one client.
-            let c = PickleLinkClient(transport: peripheral)
-            client = c
+            let id = peripheral.peripheral.identifier
+            poolLock.lock()
+            if bridges[id] == nil { bridges[id] = BridgeLink(peripheral) }
+            poolLock.unlock()
         }
 
-        public func bleManager(_: PickleLinkBLEManager, didDisconnect _: UUID, error _: Error?) {
-            let c = client
-            Task { await c?.disconnect() }
-            client = nil
-            peripheral = nil
+        public func bleManager(_: PickleLinkBLEManager, didDisconnect id: UUID, error _: Error?) {
+            poolLock.lock()
+            let link = bridges.removeValue(forKey: id)
+            if activeBridgeID == id { activeBridgeID = nil }
+            let empty = bridges.isEmpty
+            poolLock.unlock()
+            if let link { let c = link.client
+                Task { await c.disconnect() } }
+            selectActiveBridge() // реактивный фейловер на оставшийся мост
+            if empty { stopRSSIPolling() }
         }
 
-        public func peripheralIsReady(_: PickleLinkPeripheral) {}
+        public func peripheralIsReady(_ p: PickleLinkPeripheral) {
+            let id = p.peripheral.identifier
+            // Мост кэширует pump_id в NVS, но теряет его при перепрошивке/сбросе.
+            // Источник истины — приложение: переотправляем ConfigurePump (0x01) каждому
+            // мосту при готовности (идемпотентно; все мосты настроены на одну помпу).
+            let pumpID = state.pumpID
+            poolLock.lock()
+            let link = bridges[id]
+            link?.ready = true
+            poolLock.unlock()
+            guard let link else { return }
+            let c = link.client
+            Task { try? await c.configurePump(id: pumpID) }
+            selectActiveBridge()
+            startRSSIPolling()
+        }
 
         /// The glue the BLE-layer agent intentionally left open:
         /// PickleLinkPeripheral.didReceiveResponse → PickleLinkClient.ingestResponse.
-        public func peripheral(_: PickleLinkPeripheral, didReceiveResponse data: Data) {
-            let c = client
-            Task { await c?.ingestResponse(data) }
+        public func peripheral(_ p: PickleLinkPeripheral, didReceiveResponse data: Data) {
+            // Ответ маршрутизируем в сессию ИМЕННО того моста, что его прислал
+            // (у каждого свой seq-стол).
+            poolLock.lock()
+            let c = bridges[p.peripheral.identifier]?.client
+            poolLock.unlock()
+            if let c { Task { await c.ingestResponse(data) } }
         }
 
         public func peripheral(_: PickleLinkPeripheral, didReceiveStatusEvent event: StatusEvent) {
@@ -644,8 +735,12 @@
         }
 
         public func peripheral(_ p: PickleLinkPeripheral, didReadRSSI rssi: Int) {
-            // Обновляем RSSI в discovered и уведомляем делегата BLE-менеджера (DataSource слушает).
+            poolLock.lock()
+            bridges[p.peripheral.identifier]?.rssi = rssi
+            poolLock.unlock()
+            // Обновляем RSSI в discovered (DataSource слушает) и пересчитываем активный мост.
             bleManager.updateDiscoveredRSSI(id: p.peripheral.identifier, rssi: rssi)
+            selectActiveBridge()
         }
     }
 

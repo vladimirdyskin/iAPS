@@ -112,9 +112,11 @@ public enum SCMDParams {
 
     /// 0x15 SET_CLOCK: `[hour][minute][second][year_hi][year_lo][month][day]` — 7 байт.
     /// Порядок подтверждён MinimedKit/ChangeTimeCarelinkMessageBody.swift (cmd 0x40).
-    /// Компоненты берутся из локального времени устройства (Calendar.current).
+    /// Компоненты берутся из локального времени устройства. ЯВНО грегорианский
+    /// календарь: у Calendar.current на телефоне может стоять еврейский/буддийский
+    /// календарь → год вернётся в чужой системе (5786 вместо 2026) → неверные часы помпы.
     public static func setClock(from date: Date) -> Data {
-        let cal = Calendar.current
+        let cal = Calendar(identifier: .gregorian)
         let comps = cal.dateComponents([.hour, .minute, .second, .year, .month, .day], from: date)
         let year = UInt16(comps.year ?? 2000)
         var d = Data(capacity: 7)

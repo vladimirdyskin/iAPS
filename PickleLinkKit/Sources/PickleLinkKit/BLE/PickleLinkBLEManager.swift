@@ -132,14 +132,33 @@ import Foundation
 
         public func centralManagerDidUpdateState(_ central: CBCentralManager) {
             delegate?.bleManager(self, didUpdateState: central.state)
+            // Connect-all: при готовности BLE подключаемся СРАЗУ ко всем включённым
+            // мостам (пул для роуминга) + к закреплённой помпе. Держим всех онлайн,
+            // чтобы переключение по сигналу было мгновенным, без скана.
+            if central.state == .poweredOn {
+                var ids = autoconnectIDs
+                if let p = pumpPeripheralID { ids.insert(p) }
+                for id in ids { connect(id: id) }
+            }
         }
 
         public func centralManager(_: CBCentralManager, willRestoreState dict: [String: Any]) {
-            if let peris = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
-                for p in peris where p.state == .connected || p.state == .connecting {
-                    let plp = PickleLinkPeripheral(peripheral: p)
-                    connected[p.identifier] = plp
-                }
+            guard let peris = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] else { return }
+            for p in peris {
+                // Сильная ссылка обязательна — иначе CoreBluetooth молча уронит соединение.
+                peripheralRefs[p.identifier] = p
+                guard p.state == .connected || p.state == .connecting else { continue }
+                let plp = PickleLinkPeripheral(peripheral: p) // init ставит p.delegate = self
+                connected[p.identifier] = plp
+                discovered[p.identifier] = DiscoveredDevice(
+                    id: p.identifier, name: p.name, rssi: 0,
+                    discoveredAt: Date(), isConnected: p.state == .connected
+                )
+                // Поднять характеристики и сообщить PumpManager'у (создаст client, поставит
+                // plp.delegate → peripheralIsReady → configurePump). Без этого восстановленное
+                // соединение «висит» подключённым, но команды не идут — мост не отвечает.
+                plp.discoverEverything()
+                delegate?.bleManager(self, didConnect: plp)
             }
         }
 
@@ -194,6 +213,13 @@ import Foundation
         {
             pendingConnectIDs.remove(peripheral.identifier)
             delegate?.bleManager(self, didDisconnect: peripheral.identifier, error: error)
+            // Повтор подключения для активной помпы / autoconnect — одна неудачная
+            // попытка не должна оставлять мост отключённым навсегда.
+            if peripheral.identifier == pumpPeripheralID || shouldConnect(id: peripheral.identifier) {
+                peripheralRefs[peripheral.identifier] = peripheral
+                pendingConnectIDs.insert(peripheral.identifier)
+                central.connect(peripheral, options: nil)
+            }
         }
 
         public func centralManager(
@@ -209,6 +235,8 @@ import Foundation
             // Auto-reconnect: мост активной помпы реконнектится всегда;
             // остальные устройства — только если помечены пользователем через UI.
             if peripheral.identifier == pumpPeripheralID || shouldConnect(id: peripheral.identifier) {
+                peripheralRefs[peripheral.identifier] = peripheral
+                pendingConnectIDs.insert(peripheral.identifier)
                 central.connect(peripheral, options: nil)
             }
         }
