@@ -26,11 +26,13 @@
     enum PickleLinkSettingsViewAlert: Identifiable {
         case suspendError(Error)
         case resumeError(Error)
+        case syncTimeError(Error)
 
         var id: String {
             switch self {
             case .suspendError: return "suspendError"
             case .resumeError: return "resumeError"
+            case .syncTimeError: return "syncTimeError"
             }
         }
     }
@@ -43,7 +45,14 @@
         @Published var basalDeliveryState: PumpManagerStatus.BasalDeliveryState?
         @Published var reservoirUnits: Double?
         @Published var suspendResumeButtonEnabled: Bool = false
+        @Published var synchronizingTime: Bool = false
         @Published var activeAlert: PickleLinkSettingsViewAlert?
+
+        /// Возраст инсулина (смена резервуара), форматированный «N д M ч». Зеркало MinimedPumpSettingsViewModel.
+        @Published var timeSinceLastRewind: String?
+
+        /// Возраст набора (смена инфузионного сета), форматированный «N д M ч». Зеркало MinimedPumpSettingsViewModel.
+        @Published var timeSinceLastSetChange: String?
 
         // MARK: Formatters
 
@@ -72,6 +81,8 @@
             self.pumpManager = pumpManager
             basalDeliveryState = pumpManager.status.basalDeliveryState
             reservoirUnits = pumpManager.state.reservoirUnits
+            if let d = pumpManager.state.lastRewindDate { timeSinceLastRewind = formatDateToDaysHours(d) }
+            if let d = pumpManager.state.lastSetChangeDate { timeSinceLastSetChange = formatDateToDaysHours(d) }
             pumpManager.addStatusObserver(self, queue: .main)
             pumpManager.addStateObserver(self, queue: .main)
         }
@@ -182,6 +193,24 @@
             }
         }
 
+        // MARK: - Синхронизация времени (зеркало MinimedPumpSettingsViewModel.changeTimeZoneTapped)
+
+        func syncPumpTimeButtonPressed() {
+            synchronizingTime = true
+            pumpManager.syncPumpTime { [weak self] error in
+                DispatchQueue.main.async {
+                    self?.synchronizingTime = false
+                    if let error { self?.activeAlert = .syncTimeError(error) }
+                }
+            }
+        }
+
+        // MARK: - Тип инсулина (зеркало MinimedPumpSettingsViewModel.didChangeInsulinType)
+
+        func didChangeInsulinType(_ newType: InsulinType?) {
+            pumpManager.insulinType = newType
+        }
+
         // MARK: - Прочее
 
         func doneButtonPressed() { didFinish?() }
@@ -206,7 +235,20 @@
     extension PickleLinkSettingsViewModel: PickleLinkPumpManagerStateObserver {
         func didUpdatePumpManagerState(_ state: PickleLinkPumpManagerState) {
             reservoirUnits = state.reservoirUnits
+            if let d = state.lastRewindDate { timeSinceLastRewind = formatDateToDaysHours(d) }
+            if let d = state.lastSetChangeDate { timeSinceLastSetChange = formatDateToDaysHours(d) }
         }
+    }
+
+    // MARK: - Форматирование дат (зеркало MinimedPumpSettingsViewModel.formatDateToDaysHours)
+
+    private func formatDateToDaysHours(_ date: Date) -> String {
+        let components = Calendar.current.dateComponents([.day, .hour], from: date, to: Date())
+        let days = components.day ?? 0
+        let hours = components.hour ?? 0
+        let dayStr = days == 1 ? "д" : "д"
+        let hourStr = hours == 1 ? "ч" : "ч"
+        return "\(days) \(dayStr) \(hours) \(hourStr)"
     }
 
     // MARK: - BasalDeliveryState helpers (локальные, аналог extension в MinimedPumpSettingsViewModel)

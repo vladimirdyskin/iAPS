@@ -48,6 +48,12 @@
         public var lastRadioErrorAt: Date?
         public var lastWatchdogAt: Date?
 
+        /// Дата последнего события перемотки (смена резервуара). Зеркало MinimedPumpManagerState.lastRewindDate.
+        public var lastRewindDate: Date?
+
+        /// Дата последней смены набора (fixed prime = смена инфузионного сета). Зеркало MinimedPumpManagerState.lastSetChangeDate.
+        public var lastSetChangeDate: Date?
+
         public init(
             isOnboarded: Bool,
             pumpID: String,
@@ -117,6 +123,8 @@
             pumpBatteryChargeRemaining = rawValue["pumpBatteryChargeRemaining"] as? Double
             lastRadioErrorAt = rawValue["lastRadioErrorAt"] as? Date
             lastWatchdogAt = rawValue["lastWatchdogAt"] as? Date
+            lastRewindDate = rawValue["lastRewindDate"] as? Date
+            lastSetChangeDate = rawValue["lastSetChangeDate"] as? Date
             if let rawSchedule = rawValue["basalSchedule"] as? BasalRateSchedule.RawValue {
                 basalSchedule = BasalRateSchedule(rawValue: rawSchedule)
             }
@@ -141,6 +149,8 @@
             value["insulinType"] = insulinType?.rawValue
             value["lastRadioErrorAt"] = lastRadioErrorAt
             value["lastWatchdogAt"] = lastWatchdogAt
+            value["lastRewindDate"] = lastRewindDate
+            value["lastSetChangeDate"] = lastSetChangeDate
             value["basalSchedule"] = basalSchedule?.rawValue
             return value
         }

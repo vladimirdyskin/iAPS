@@ -103,6 +103,22 @@
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    if let timeSinceLastRewind = viewModel.timeSinceLastRewind {
+                        HStack {
+                            Text("Возраст инсулина")
+                            Spacer()
+                            Text(timeSinceLastRewind)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if let timeSinceLastSetChange = viewModel.timeSinceLastSetChange {
+                        HStack {
+                            Text("Возраст набора")
+                            Spacer()
+                            Text(timeSinceLastSetChange)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     HStack {
                         Text("Время помпы")
                         Spacer()
@@ -112,6 +128,38 @@
                         }
                         PickleLinkTimeView(timeZone: viewModel.pumpManager.status.timeZone)
                             .foregroundColor(viewModel.isClockOffset ? guidanceColors.warning : .secondary)
+                    }
+                    if viewModel.synchronizingTime {
+                        HStack {
+                            Text("Синхронизация времени...")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            ProgressView()
+                        }
+                    } else if viewModel.isClockOffset {
+                        Button("Синхронизировать время помпы") {
+                            viewModel.syncPumpTimeButtonPressed()
+                        }
+                    }
+                }
+
+                // MARK: Конфигурация
+
+                Section(header: Text("Конфигурация")) {
+                    NavigationLink(destination: InsulinTypeSetting(
+                        initialValue: viewModel.pumpManager.state.insulinType,
+                        supportedInsulinTypes: InsulinType.allCases,
+                        allowUnsetInsulinType: false,
+                        didChange: viewModel.didChangeInsulinType
+                    )) {
+                        HStack {
+                            Text("Тип инсулина")
+                            Spacer()
+                            if let name = viewModel.pumpManager.state.insulinType?.brandName {
+                                Text(name)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
 
@@ -150,6 +198,11 @@
                 case let .resumeError(error):
                     return Alert(
                         title: Text("Ошибка возобновления"),
+                        message: Text(errorText(error))
+                    )
+                case let .syncTimeError(error):
+                    return Alert(
+                        title: Text("Ошибка синхронизации времени"),
                         message: Text(errorText(error))
                     )
                 }

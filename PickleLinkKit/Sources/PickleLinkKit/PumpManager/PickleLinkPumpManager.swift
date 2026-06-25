@@ -241,6 +241,12 @@
             return try BridgeLogDecode.parse(raw)
         }
 
+        /// Тип инсулина — публичный сеттер для UI (зеркало MinimedPumpManager.insulinType ~1019).
+        public var insulinType: InsulinType? {
+            get { state.insulinType }
+            set { mutateState { $0.insulinType = newValue } }
+        }
+
         /// UUID активного подключённого моста (для определения isConnected в UI).
         public var activeBridgeUUID: UUID? {
             poolLock.lock()
@@ -499,6 +505,21 @@
                         self.mutateState { $0.reservoirUnits = res.units }
                         self.reportReservoir(res.units)
                     }
+                    // Читаем расписание базала один раз — если ещё не загружено (экономия RF).
+                    // После syncBasalRateSchedule оно уже есть в state и не перечитывается.
+                    if self.state.basalSchedule == nil {
+                        if let entries = try? await c.getBasalRates(), !entries.isEmpty { // 0x0C
+                            let items = entries.map { entry in
+                                RepeatingScheduleValue<Double>(
+                                    startTime: TimeInterval(entry.startSeconds),
+                                    value: PickleLinkConversions.milliunitsToUnits(entry.rateMu)
+                                )
+                            }
+                            if let schedule = BasalRateSchedule(dailyItems: items, timeZone: self.state.timeZone) {
+                                self.mutateState { $0.basalSchedule = schedule }
+                            }
+                        }
+                    }
                     try await self.syncHistory() // 0x14 + 0x10
                     completion?(Date())
                 } catch {
@@ -623,7 +644,23 @@
             let result = try await sync.sync(lastSyncedPage: state.lastSyncedHistoryPage, after: filterDate)
             guard !result.events.isEmpty || result.newLastSyncedPage != state.lastSyncedHistoryPage else { return }
             mutateState { $0.lastSyncedHistoryPage = result.newLastSyncedPage }
-            let events = result.events
+
+            // Обновляем даты смены резервуара и набора (зеркало MinimedPumpManager.updateLastEventDates).
+            updateLastEventDates(from: result.events)
+
+            // Аннотируем дозы типом инсулина (зеркало MinimedPumpManager ~стр. 760-766).
+            let insulinType = state.insulinType
+            let events: [NewPumpEvent] = result.events.map { event in
+                guard let insulinType else { return event }
+                return NewPumpEvent(
+                    date: event.date,
+                    dose: event.dose?.annotated(with: insulinType),
+                    raw: event.raw,
+                    title: event.title,
+                    type: event.type
+                )
+            }
+
             delegateQueue?.async { [weak self] in
                 guard let self = self else { return }
                 self.lockedDelegate?.pumpManager(
@@ -632,6 +669,43 @@
                     lastReconciliation: Date(),
                     replacePendingEvents: true
                 ) { _ in }
+            }
+        }
+
+        /// Зеркало MinimedPumpManager.updateLastEventDates (строки 810-841).
+        /// Обновляет lastRewindDate (смена резервуара) и lastSetChangeDate (смена набора),
+        /// сохраняя только самую свежую дату.
+        private func updateLastEventDates(from events: [NewPumpEvent]) {
+            var latestSetChange: Date?
+            var latestRewind: Date?
+
+            for event in events {
+                switch event.type {
+                case .replaceComponent(componentType: .infusionSet):
+                    if latestSetChange == nil || event.date > latestSetChange! {
+                        latestSetChange = event.date
+                    }
+                case .rewind:
+                    if latestRewind == nil || event.date > latestRewind! {
+                        latestRewind = event.date
+                    }
+                default:
+                    break
+                }
+            }
+
+            // Обновляем state только если нашли более свежие события.
+            mutateState { state in
+                if let setChange = latestSetChange {
+                    if state.lastSetChangeDate == nil || setChange > state.lastSetChangeDate! {
+                        state.lastSetChangeDate = setChange
+                    }
+                }
+                if let rewind = latestRewind {
+                    if state.lastRewindDate == nil || rewind > state.lastRewindDate! {
+                        state.lastRewindDate = rewind
+                    }
+                }
             }
         }
 
