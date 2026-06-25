@@ -23,7 +23,13 @@
         @State private var errorMessage: String?
         @State private var showBridgeLog = false
 
+        // Живой флаг активного коннекта — обновляется таймером каждые 2 сек.
+        // activeBridgeUUID — обычное computed-свойство, не @Published, поэтому
+        // SwiftUI не умеет за ним следить самостоятельно.
+        @State private var isActive: Bool = false
+
         private let rssiTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
+        private let connectionTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
         // MARK: Body
 
@@ -37,6 +43,7 @@
             .navigationTitle(device.name)
             .onAppear { fetchOnOpen() }
             .onReceive(rssiTimer) { _ in updateRSSI() }
+            .onReceive(connectionTimer) { _ in checkConnectionState() }
         }
 
         // MARK: - Секция: Устройство
@@ -72,11 +79,9 @@
             HStack {
                 Text("Состояние")
                 Spacer()
-                // Проверяем текущее подключение через activeBridgeUUID, т.к. BridgeDevice.isConnected
-                // снимок на момент открытия. activeBridgeUUID — live из менеджера.
-                let connected = pumpManager.activeBridgeUUID == device.id
-                Text(connected ? "Подключён" : "Резерв")
-                    .foregroundStyle(connected ? .primary : .secondary)
+                // isActive обновляется таймером каждые 2 сек — гарантирует live-состояние.
+                Text(isActive ? "Подключён" : "Резерв")
+                    .foregroundStyle(isActive ? .primary : .secondary)
             }
         }
 
@@ -119,7 +124,7 @@
 
         private var firmwareSection: some View {
             Section(header: Text("Прошивка")) {
-                if isActiveDevice {
+                if isActive {
                     if firmwareLoading {
                         HStack {
                             Text("Версия")
@@ -146,7 +151,7 @@
 
         private var bridgeSection: some View {
             Section(header: Text("Мост")) {
-                if isActiveDevice {
+                if isActive {
                     if statsLoading && stats == nil {
                         HStack { ProgressView().frame(maxWidth: .infinity) }
                     } else if let s = stats {
@@ -198,22 +203,33 @@
                 .font(.footnote)
         }
 
-        /// Устройство — текущий активный коннект.
-        private var isActiveDevice: Bool {
-            pumpManager.activeBridgeUUID == device.id
-        }
-
         // MARK: - Запросы
 
         /// Вызывается при появлении экрана: RSSI + прошивка + статистика.
         private func fetchOnOpen() {
             rssi = device.rssi
             pumpManager.bleManager.updateRSSI()
-            if isActiveDevice {
+            isActive = pumpManager.activeBridgeUUID == device.id
+            if isActive {
                 Task {
                     await fetchFirmware()
                     await fetchStats()
                 }
+            }
+        }
+
+        /// Опрашивается таймером каждые 2 сек. Если мост стал активным — грузим данные.
+        private func checkConnectionState() {
+            let nowActive = pumpManager.activeBridgeUUID == device.id
+            if nowActive, !isActive {
+                // Мост только что стал активным — подгружаем прошивку и статистику.
+                isActive = true
+                Task {
+                    await fetchFirmware()
+                    await fetchStats()
+                }
+            } else {
+                isActive = nowActive
             }
         }
 
