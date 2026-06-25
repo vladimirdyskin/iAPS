@@ -71,11 +71,14 @@ public struct DeviceStatistics: Equatable, Sendable {
     public let batteryPct: UInt8
     public let rxCount: UInt16
     public let txCount: UInt8
-    public init(batteryMv: UInt16, batteryPct: UInt8, rxCount: UInt16, txCount: UInt8) {
+    /// Uptime моста в секундах (u32 BE, offset 6). nil если прошивка < v1.2.0 (6-байт payload).
+    public let uptimeSeconds: UInt32?
+    public init(batteryMv: UInt16, batteryPct: UInt8, rxCount: UInt16, txCount: UInt8, uptimeSeconds: UInt32? = nil) {
         self.batteryMv = batteryMv
         self.batteryPct = batteryPct
         self.rxCount = rxCount
         self.txCount = txCount
+        self.uptimeSeconds = uptimeSeconds
     }
 }
 
@@ -144,6 +147,9 @@ public enum SmartBridgeDecode {
     }
 
     /// 0x12 GET_STATISTICS
+    /// Payload 6 байт (прошивка < v1.2.0): [batt_hi, batt_lo, batt_pct, rx_hi, rx_lo, tx]
+    /// Payload 10 байт (v1.2.0+): как выше + [uptime u32 BE]
+    /// Обратная совместимость: 6-байт payload — uptimeSeconds = nil, не является ошибкой.
     public static func statistics(_ p: Data) throws -> DeviceStatistics {
         guard p.count >= 6 else { throw SmartBridgeError.shortPayload(expected: 6, got: p.count) }
         let b = [UInt8](p)
@@ -151,7 +157,9 @@ public enum SmartBridgeDecode {
         let pct = b[2]
         let rx = try EndianRead.u16BE(p, 3)
         let tx = b[5]
-        return DeviceStatistics(batteryMv: mv, batteryPct: pct, rxCount: rx, txCount: tx)
+        // Uptime присутствует только в v1.2.0+ (payload >= 10 байт).
+        let uptime: UInt32? = p.count >= 10 ? (try? EndianRead.u32BE(p, 6)) : nil
+        return DeviceStatistics(batteryMv: mv, batteryPct: pct, rxCount: rx, txCount: tx, uptimeSeconds: uptime)
     }
 
     /// 0x13 PING → ASCII string

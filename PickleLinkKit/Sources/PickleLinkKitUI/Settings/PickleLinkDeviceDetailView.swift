@@ -19,6 +19,7 @@
         @State private var firmwareLoading = false
         @State private var stats: DeviceStatistics?
         @State private var statsLoading = false
+        @State private var identifyLoading = false
         @State private var errorMessage: String?
 
         private let rssiTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
@@ -151,6 +152,11 @@
                         LabeledValueView(label: "Батарея", value: "\(s.batteryPct)% · \(s.batteryMv) mV")
                         LabeledValueView(label: "RX пакетов", value: "\(s.rxCount)")
                         LabeledValueView(label: "TX (wrap 255)", value: "\(s.txCount)")
+                        // Uptime: присутствует в прошивке v1.2.0+; nil для старых мостов.
+                        LabeledValueView(
+                            label: "Uptime",
+                            value: s.uptimeSeconds.map { formatUptime($0) } ?? "—"
+                        )
                     }
                     // Кнопка «Обновить» всегда (если подключён, даже если stats nil).
                     Button {
@@ -162,10 +168,19 @@
                         }
                     }
                     .disabled(statsLoading)
+                    // Кнопка «Найти устройство» — identify (LED мигает ~2 сек).
+                    Button {
+                        Task { await identify() }
+                    } label: {
+                        HStack {
+                            Text("Найти устройство")
+                            if identifyLoading { ProgressView() }
+                        }
+                    }
+                    .disabled(identifyLoading)
                 } else {
                     unavailableRow
                 }
-                // Место под uptime / LED (следующий шаг, нужны правки прошивки).
             }
         }
 
@@ -224,6 +239,34 @@
                 errorMessage = "GET_STATISTICS: \(error.localizedDescription)"
             }
             statsLoading = false
+        }
+
+        private func identify() async {
+            identifyLoading = true
+            do {
+                try await pumpManager.setBridgeLED(action: 2)
+                errorMessage = nil
+            } catch {
+                errorMessage = "SET_LED: \(error.localizedDescription)"
+            }
+            identifyLoading = false
+        }
+
+        // MARK: - Утилиты
+
+        /// Форматирует секунды uptime в читаемую строку: "2 дн 3 ч 15 мин" / "5 ч 12 мин" / "42 мин".
+        private func formatUptime(_ seconds: UInt32) -> String {
+            let totalMinutes = seconds / 60
+            let days = totalMinutes / 1440
+            let hours = (totalMinutes % 1440) / 60
+            let minutes = totalMinutes % 60
+            if days > 0 {
+                return "\(days) дн \(hours) ч \(minutes) мин"
+            } else if hours > 0 {
+                return "\(hours) ч \(minutes) мин"
+            } else {
+                return "\(minutes) мин"
+            }
         }
     }
 #endif

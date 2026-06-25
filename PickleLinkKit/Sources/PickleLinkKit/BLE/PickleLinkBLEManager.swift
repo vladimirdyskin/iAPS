@@ -42,6 +42,38 @@ import Foundation
             pumpPeripheralID = id
         }
 
+        // ОДИН активный коннект за раз. С несколькими одновременными коннектами мосты
+        // глушат друг друга на радио помпы (коллизия 868 МГц) и BLE рвётся
+        // (supervision timeout). Подключён ТОЛЬКО лучший мост; остальные — кандидаты,
+        // их сигнал берём из скана. При обрыве/уходе из зоны — переключаемся на лучший.
+        private var activeID: UUID?
+
+        /// Включённые мосты-кандидаты = ПОЛЬЗОВАТЕЛЬСКИЕ тогглы. Выключенный тоггл
+        /// исключает мост ПОЛНОСТЬЮ, даже если он закреплён как помпа. Если не выбран
+        /// ни один (первый запуск) — закреплённая помпа как дефолт.
+        private var enabledIDs: Set<UUID> {
+            if !autoconnectIDs.isEmpty { return autoconnectIDs }
+            if let p = pumpPeripheralID { return [p] }
+            return []
+        }
+
+        /// Поставить pending-коннект ко ВСЕМ включённым мостам по UUID (retrievePeripherals,
+        /// БЕЗ скана). `central.connect()` — pending: срабатывает в ФОНЕ/при блокировке,
+        /// когда мост в зоне (скан в фоне iOS заглушает — поэтому реконнект через скан и
+        /// ломал петлю при заблокированном телефоне). Реальный коннект придёт в didConnect;
+        /// единственность держим там (лишние pending отменяются). При обрыве активного —
+        /// заново pend всех → подхватится тот, что в зоне (роуминг работает и в фоне).
+        private func connectAllEnabled() {
+            guard activeID == nil else { return }
+            for id in enabledIDs {
+                let p = peripheralRefs[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first
+                guard let peripheral = p else { continue }
+                peripheralRefs[id] = peripheral
+                pendingConnectIDs.insert(id)
+                central.connect(peripheral, options: nil)
+            }
+        }
+
         // MARK: - Autoconnect memory
 
         // Набор UUID, которые пользователь пометил «автоподключать».
@@ -67,11 +99,13 @@ import Foundation
             if enabled {
                 ids.insert(id)
                 autoconnectIDs = ids
-                connect(id: id)
+                // Новый кандидат. Pending-коннект ко всем включённым (если активного нет);
+                // лишние отменятся в didConnect. В резерве подхватится при обрыве текущего.
+                connectAllEnabled()
             } else {
                 ids.remove(id)
                 autoconnectIDs = ids
-                disconnect(id: id)
+                disconnect(id: id) // если это активный — didDisconnect переключит на другой
             }
         }
 
@@ -104,6 +138,11 @@ import Foundation
 
         public func startScan() {
             guard central.state == .poweredOn else { return }
+            // allowDuplicates=false: ОБЯЗАТЕЛЬНО. С true CoreBluetooth шлёт didDiscover
+            // десятки раз/сек на главную очередь → перестройка UI-списка → зависание
+            // главного потока → watchdog-килл iAPS (0x8badf00d) → обрыв BLE (reason 19)
+            // → «ошибка связи». Резерв получает RSSI один раз при старте скана — этого
+            // достаточно для отображения сигнала, без флуда.
             central.scanForPeripherals(
                 withServices: [PickleLinkUUIDs.service],
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -115,16 +154,31 @@ import Foundation
         }
 
         public func connect(id: UUID) {
+            // Единственный активный коннект — рвём все прочие перед новым.
+            for (cid, plp) in connected where cid != id {
+                central.cancelPeripheralConnection(plp.peripheral)
+            }
             let p = peripheralRefs[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first
-            guard let peripheral = p else { return }
+            guard let peripheral = p else { startScan()
+                return }
             peripheralRefs[id] = peripheral
+            activeID = id
             pendingConnectIDs.insert(id)
             central.connect(peripheral, options: nil)
         }
 
         public func disconnect(id: UUID) {
+            pendingConnectIDs.remove(id)
             if let plp = connected[id] {
+                // Активный коннект — рвём; didDisconnectPeripheral дочистит и переключит.
                 central.cancelPeripheralConnection(plp.peripheral)
+            } else if let p = peripheralRefs[id] {
+                // Только pending-попытка — отменяем. didDisconnect не придёт, чистим сами.
+                central.cancelPeripheralConnection(p)
+                if activeID == id {
+                    activeID = nil
+                    connectAllEnabled()
+                }
             }
         }
 
@@ -132,13 +186,11 @@ import Foundation
 
         public func centralManagerDidUpdateState(_ central: CBCentralManager) {
             delegate?.bleManager(self, didUpdateState: central.state)
-            // Connect-all: при готовности BLE подключаемся СРАЗУ ко всем включённым
-            // мостам (пул для роуминга) + к закреплённой помпе. Держим всех онлайн,
-            // чтобы переключение по сигналу было мгновенным, без скана.
+            // Реконнект — прямым pending-connect (работает в фоне/при блокировке), БЕЗ
+            // скана. Скан нужен только для UI-списка устройств — его включает DataSource
+            // при открытом экране настроек (isScanningEnabled).
             if central.state == .poweredOn {
-                var ids = autoconnectIDs
-                if let p = pumpPeripheralID { ids.insert(p) }
-                for id in ids { connect(id: id) }
+                connectAllEnabled()
             }
         }
 
@@ -148,6 +200,13 @@ import Foundation
                 // Сильная ссылка обязательна — иначе CoreBluetooth молча уронит соединение.
                 peripheralRefs[p.identifier] = p
                 guard p.state == .connected || p.state == .connecting else { continue }
+                // Один активный коннект: первый восстановленный делаем активным,
+                // любые лишние — рвём.
+                if let a = activeID, a != p.identifier {
+                    central.cancelPeripheralConnection(p)
+                    continue
+                }
+                activeID = p.identifier
                 let plp = PickleLinkPeripheral(peripheral: p) // init ставит p.delegate = self
                 connected[p.identifier] = plp
                 discovered[p.identifier] = DiscoveredDevice(
@@ -160,6 +219,11 @@ import Foundation
                 plp.discoverEverything()
                 delegate?.bleManager(self, didConnect: plp)
             }
+            // Восстановление после suspend/relaunch: если активного коннекта нет,
+            // заново ставим pending-коннект ко всем включённым мостам. iOS перезапускает
+            // приложение по BLE-событию (restoreIdentifier) — без этого pending-коннект
+            // не восстанавливается, мост не переподключается в фоне, петля стоит.
+            connectAllEnabled()
         }
 
         public func centralManager(
@@ -180,10 +244,30 @@ import Foundation
             peripheralRefs[peripheral.identifier] = peripheral
             discovered[dev.id] = dev
             delegate?.bleManager(self, didUpdateDiscovered: Array(discovered.values))
+            // Активного нет, а это включённый мост в зоне — подключаемся к нему.
+            if activeID == nil, enabledIDs.contains(peripheral.identifier) {
+                connect(id: peripheral.identifier)
+            }
         }
 
         public func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
             pendingConnectIDs.remove(peripheral.identifier)
+            // Подключился мост, который НЕ включён тогглом (гонка: тоггл выключили, пока
+            // pending-коннект был в полёте). Отклоняем — активным держим только
+            // включённый мост, иначе UI «перевёрнут» (выключенный показан активным).
+            guard enabledIDs.contains(peripheral.identifier) else {
+                central.cancelPeripheralConnection(peripheral)
+                if activeID == peripheral.identifier { activeID = nil }
+                connectAllEnabled()
+                return
+            }
+            activeID = peripheral.identifier
+            // Скан НЕ останавливаем — резервные мосты должны показывать живой RSSI
+            // (иначе их значок «перечёркнут»). Один коннект + скан стабильны.
+            // Подчистить любые прочие коннекты — держим строго один.
+            for (cid, plp) in connected where cid != peripheral.identifier {
+                central.cancelPeripheralConnection(plp.peripheral)
+            }
             let plp = PickleLinkPeripheral(peripheral: peripheral)
             connected[peripheral.identifier] = plp
             // Если устройство не было обнаружено через скан (например, мост помпы был
@@ -213,17 +297,15 @@ import Foundation
         {
             pendingConnectIDs.remove(peripheral.identifier)
             delegate?.bleManager(self, didDisconnect: peripheral.identifier, error: error)
-            // Повтор подключения для активной помпы / autoconnect — одна неудачная
-            // попытка не должна оставлять мост отключённым навсегда.
-            if peripheral.identifier == pumpPeripheralID || shouldConnect(id: peripheral.identifier) {
-                peripheralRefs[peripheral.identifier] = peripheral
-                pendingConnectIDs.insert(peripheral.identifier)
-                central.connect(peripheral, options: nil)
-            }
+            // Не достучались — освобождаем слот и заново ставим pending-коннект ко всем
+            // включённым (фоновый, без скана). central.connect() сам ждёт появления моста
+            // в зоне без тайт-лупа — повторных мгновенных didFailToConnect не будет.
+            if peripheral.identifier == activeID { activeID = nil }
+            connectAllEnabled()
         }
 
         public func centralManager(
-            _ central: CBCentralManager,
+            _: CBCentralManager,
             didDisconnectPeripheral peripheral: CBPeripheral,
             error: Error?
         )
@@ -232,12 +314,12 @@ import Foundation
             discovered[peripheral.identifier]?.isConnected = false
             delegate?.bleManager(self, didDisconnect: peripheral.identifier, error: error)
             delegate?.bleManager(self, didUpdateDiscovered: Array(discovered.values))
-            // Auto-reconnect: мост активной помпы реконнектится всегда;
-            // остальные устройства — только если помечены пользователем через UI.
-            if peripheral.identifier == pumpPeripheralID || shouldConnect(id: peripheral.identifier) {
-                peripheralRefs[peripheral.identifier] = peripheral
-                pendingConnectIDs.insert(peripheral.identifier)
-                central.connect(peripheral, options: nil)
+            // Обрыв активного (ушёл из зоны / supervision timeout) — заново ставим
+            // pending-коннект ко ВСЕМ включённым. Работает в ФОНЕ/при блокировке:
+            // подхватится тот мост, что в зоне (роуминг переключением, без скана).
+            if peripheral.identifier == activeID {
+                activeID = nil
+                connectAllEnabled()
             }
         }
     }

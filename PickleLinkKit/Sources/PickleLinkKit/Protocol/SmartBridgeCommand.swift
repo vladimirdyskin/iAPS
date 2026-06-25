@@ -27,6 +27,7 @@ public enum SCMD: UInt8, CaseIterable, Sendable {
     case setBasalSchedule = 0x16
     case setMaxBasal = 0x17
     case setMaxBolus = 0x18
+    case setLED = 0x19
 }
 
 /// Wire frame: `[seq][cmd_id][params...]`
@@ -108,6 +109,11 @@ public enum SCMDParams {
         var d = Data(capacity: 4)
         d.appendBE(amountMilliunits)
         return d
+    }
+
+    /// 0x19 SET_LED: `[1] action` — 0=off, 1=on, 2=identify (мигание ~2 сек).
+    public static func setLED(action: UInt8) -> Data {
+        Data([action])
     }
 
     /// 0x15 SET_CLOCK: `[hour][minute][second][year_hi][year_lo][month][day]` — 7 байт.

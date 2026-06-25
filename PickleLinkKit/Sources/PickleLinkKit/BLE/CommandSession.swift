@@ -8,6 +8,13 @@ public actor CommandSession {
     private var outstanding: [UInt8: Pending] = [:]
     private let defaultTimeout: TimeInterval
 
+    // Сериализация: ровно одна команда «в полёте» на мост. Параллельные вызовы
+    // (refresh статуса + temp basal от Loop) иначе перетирают единственный
+    // pendingWrite в PickleLinkPeripheral → .notConnected, в худшем — двойной
+    // resume continuation → краш. Прошивка и так обрабатывает команды по одной.
+    private var commandInFlight = false
+    private var commandWaiters: [CheckedContinuation<Void, Never>] = []
+
     // 20с — покрывает worst-case wakeup прошивки (~12.75с) + команду (см. PickleLinkClient).
     public init(transport: CommandTransport, defaultTimeout: TimeInterval = 20.0) {
         self.transport = transport
@@ -34,6 +41,8 @@ public actor CommandSession {
         timeout: TimeInterval? = nil
     ) async throws -> Data
     {
+        await acquireCommandSlot()
+        defer { releaseCommandSlot() }
         guard let transport = transport else { throw SmartBridgeError.notConnected }
         let seq = nextSeq()
         let frame = CommandFrame(seq: seq, command: cmd, params: params).encode()
@@ -81,6 +90,22 @@ public actor CommandSession {
     private func awaitResponse(seq: UInt8, command: SCMD) async throws -> Data {
         try await withCheckedThrowingContinuation { cont in
             outstanding[seq] = Pending(command: command, continuation: cont, buffer: Data(), started: Date())
+        }
+    }
+
+    /// Захватить слот «команда в полёте». Если занят — ждём в очереди.
+    private func acquireCommandSlot() async {
+        if !commandInFlight { commandInFlight = true
+            return }
+        await withCheckedContinuation { commandWaiters.append($0) }
+    }
+
+    /// Освободить слот и передать его следующему ожидающему (по одному).
+    private func releaseCommandSlot() {
+        if commandWaiters.isEmpty {
+            commandInFlight = false
+        } else {
+            commandWaiters.removeFirst().resume() // слот переходит следующему, in-flight остаётся true
         }
     }
 

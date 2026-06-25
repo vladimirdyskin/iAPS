@@ -101,10 +101,12 @@
             super.init()
             bleManager.delegate = self
             if let id = state.peripheralIdentifier {
-                // Помечаем мост активной помпы — он реконнектится при обрыве
-                // вне зависимости от UI-тоггла autoconnect.
+                // Помечаем закреплённый мост (дефолт-кандидат, если тогглов нет).
+                // НЕ коннектим напрямую — это игнорировало UI-тоггл: закреплённый мост
+                // подключался даже выключенным, а включённый оставался резервом.
+                // Коннект делает BLEManager.connectAllEnabled (на poweredOn/restore),
+                // уважая тогглы (enabledIDs = autoconnectIDs, иначе закреплённый).
                 bleManager.markAsPumpPeripheral(id: id)
-                bleManager.connect(id: id)
             }
         }
 
@@ -225,6 +227,12 @@
         /// Diagnostic accessor for the settings UI (0x13 PING).
         public func fetchPing() async throws -> String {
             try await requireClient().ping()
+        }
+
+        /// 0x19 SET_LED для активного моста. action: 0=off, 1=on, 2=identify.
+        /// Только активный мост — резервный не управляется (requireClient бросит, если нет активного).
+        public func setBridgeLED(action: UInt8) async throws {
+            try await requireClient().setLED(action: action)
         }
 
         /// UUID активного подключённого моста (для определения isConnected в UI).
@@ -675,8 +683,13 @@
             if activeBridgeID == id { activeBridgeID = nil }
             let empty = bridges.isEmpty
             poolLock.unlock()
-            if let link { let c = link.client
-                Task { await c.disconnect() } }
+            if let link {
+                // Провалить зависшую BLE-запись (обрыв в момент записи) — иначе
+                // continuation утекает → send() висит → слот команды держится → клин.
+                link.peripheral.failPendingWrite()
+                let c = link.client
+                Task { await c.disconnect() } // failAll: резолвит outstanding-ответы
+            }
             selectActiveBridge() // реактивный фейловер на оставшийся мост
             if empty { stopRSSIPolling() }
         }

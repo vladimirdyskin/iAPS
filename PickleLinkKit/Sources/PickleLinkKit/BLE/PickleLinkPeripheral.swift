@@ -13,9 +13,30 @@ import Foundation
         private var responseChar: CBCharacteristic?
         private var statusChar: CBCharacteristic?
 
+        // pendingWrite трогается из двух потоков: sendCommand (исполнитель actor
+        // CommandSession) и didWriteValueFor (main-очередь CBPeripheral). Без лока —
+        // гонка и двойной resume CheckedContinuation = краш. Берём continuation
+        // АТОМАРНО (swap на nil под локом), resume — ВНЕ лока, ровно один раз.
+        private let writeLock = NSLock()
         private var pendingWrite: CheckedContinuation<Void, Error>?
         private var didSignalReady = false
         private var discoveryStarted = false
+
+        /// Атомарно забрать pendingWrite (swap на nil). Resume вызывать вне лока.
+        private func takePendingWrite() -> CheckedContinuation<Void, Error>? {
+            writeLock.lock()
+            defer { writeLock.unlock() }
+            let c = pendingWrite
+            pendingWrite = nil
+            return c
+        }
+
+        /// Провалить зависшую запись при обрыве (вызывается из PumpManager.didDisconnect).
+        /// Без этого continuation pendingWrite утекает при разрыве в момент записи →
+        /// send() висит вечно → слот команды держится → клин ВСЕХ команд.
+        public func failPendingWrite() {
+            takePendingWrite()?.resume(throwing: SmartBridgeError.notConnected)
+        }
 
         public init(peripheral: CBPeripheral) {
             self.peripheral = peripheral
@@ -47,13 +68,13 @@ import Foundation
         public func sendCommand(_ frame: Data) async throws {
             guard let ch = commandChar else { throw SmartBridgeError.characteristicsMissing }
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                // If a previous write never got its didWriteValueFor callback,
-                // fail it now so its continuation can't leak.
-                if let stale = self.pendingWrite {
-                    self.pendingWrite = nil
-                    stale.resume(throwing: SmartBridgeError.notConnected)
-                }
-                self.pendingWrite = cont
+                // Атомарно: забрать прежний (stale) continuation и поставить новый.
+                writeLock.lock()
+                let stale = pendingWrite
+                pendingWrite = cont
+                writeLock.unlock()
+                // resume — ВНЕ лока, ровно один раз (stale уже не доступен другим).
+                stale?.resume(throwing: SmartBridgeError.notConnected)
                 // WRITE with response — wait for didWriteValueFor callback.
                 peripheral.writeValue(frame, for: ch, type: .withResponse)
             }
@@ -128,8 +149,7 @@ import Foundation
             error: Error?
         )
         {
-            let cont = pendingWrite
-            pendingWrite = nil
+            let cont = takePendingWrite()
             if let error = error {
                 cont?.resume(throwing: error)
             } else {

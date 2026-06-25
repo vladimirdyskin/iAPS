@@ -163,4 +163,9 @@ public actor PickleLinkClient {
     public func setMaxBolus(amountMilliunits: UInt32) async throws {
         _ = try await session.send(.setMaxBolus, params: SCMDParams.setMaxBolus(amountMilliunits: amountMilliunits))
     }
+
+    /// 0x19 — SET_LED. action: 0=off, 1=on, 2=identify (~2 sec blink).
+    public func setLED(action: UInt8) async throws {
+        _ = try await session.send(.setLED, params: SCMDParams.setLED(action: action))
+    }
 }
