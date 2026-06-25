@@ -35,6 +35,7 @@
 		PL02000000000001 /* PickleLinkNativeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000011 /* PickleLinkNativeSettingsView.swift */; };
 		PL02000000000002 /* PickleLinkSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000012 /* PickleLinkSettingsViewModel.swift */; };
 		PL02000000000003 /* PickleLinkListDataSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000013 /* PickleLinkListDataSource.swift */; };
+		PL02000000000004 /* PickleLinkDeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000014 /* PickleLinkDeviceDetailView.swift */; };
 		48F446EFFBB34B09950FD8D1 /* FrequencyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02EE2FB045D74179A28D781B /* FrequencyView.swift */; };
 		8D8F77C56E534C34AB96F19A /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 586DE0EF6366454EA8944116 /* PairingView.swift */; };
 		463C8A83013F4A8E9CE6643A /* PumpIDEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9315FB7A718044528CE6BE4A /* PumpIDEntryView.swift */; };
@@ -103,6 +104,7 @@
 		PL02000000000011 /* PickleLinkNativeSettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkNativeSettingsView.swift; sourceTree = "<group>"; };
 		PL02000000000012 /* PickleLinkSettingsViewModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkSettingsViewModel.swift; sourceTree = "<group>"; };
 		PL02000000000013 /* PickleLinkListDataSource.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkListDataSource.swift; sourceTree = "<group>"; };
+		PL02000000000014 /* PickleLinkDeviceDetailView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkDeviceDetailView.swift; sourceTree = "<group>"; };
 		02EE2FB045D74179A28D781B /* FrequencyView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FrequencyView.swift; sourceTree = "<group>"; };
 		586DE0EF6366454EA8944116 /* PairingView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		9315FB7A718044528CE6BE4A /* PumpIDEntryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PumpIDEntryView.swift; sourceTree = "<group>"; };
@@ -230,6 +232,7 @@
 				PL02000000000011 /* PickleLinkNativeSettingsView.swift */,
 				PL02000000000012 /* PickleLinkSettingsViewModel.swift */,
 				PL02000000000013 /* PickleLinkListDataSource.swift */,
+				PL02000000000014 /* PickleLinkDeviceDetailView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -377,6 +380,7 @@
 				PL02000000000001 /* PickleLinkNativeSettingsView.swift in Sources */,
 				PL02000000000002 /* PickleLinkSettingsViewModel.swift in Sources */,
 				PL02000000000003 /* PickleLinkListDataSource.swift in Sources */,
+				PL02000000000004 /* PickleLinkDeviceDetailView.swift in Sources */,
 				48F446EFFBB34B09950FD8D1 /* FrequencyView.swift in Sources */,
 				8D8F77C56E534C34AB96F19A /* PairingView.swift in Sources */,
 				463C8A83013F4A8E9CE6643A /* PumpIDEntryView.swift in Sources */,

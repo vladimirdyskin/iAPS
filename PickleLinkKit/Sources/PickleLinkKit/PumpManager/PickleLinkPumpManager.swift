@@ -221,6 +221,18 @@
         public func fetchStatistics() async throws -> DeviceStatistics {
             try await requireClient().getStatistics()
         }
+
+        /// Diagnostic accessor for the settings UI (0x13 PING).
+        public func fetchPing() async throws -> String {
+            try await requireClient().ping()
+        }
+
+        /// UUID активного подключённого моста (для определения isConnected в UI).
+        public var activeBridgeUUID: UUID? {
+            poolLock.lock()
+            defer { poolLock.unlock() }
+            return activeBridgeID
+        }
     }
 
     // MARK: - Pluggable / DeviceManager

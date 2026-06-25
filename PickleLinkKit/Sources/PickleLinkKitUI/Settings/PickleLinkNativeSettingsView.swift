@@ -56,21 +56,33 @@
                     ProgressView()
                 }) {
                     ForEach(listDataSource.devices) { device in
-                        Toggle(isOn: listDataSource.autoconnectBinding(for: device.id)) {
-                            HStack {
-                                Text(device.name)
-                                Spacer()
-                                if listDataSource.autoconnectBinding(for: device.id).wrappedValue {
-                                    if device.isConnected {
-                                        Text(formatRSSI(rssi: device.rssi))
-                                            .foregroundColor(.secondary)
-                                    } else {
-                                        Image(systemName: "wifi.exclamationmark")
-                                            .imageScale(.large)
-                                            .foregroundColor(guidanceColors.warning)
+                        // Паттерн RileyLink: имя → детальный экран, тоггл autoconnect справа.
+                        // Toggle в Label не позволяет разделить нажатия, поэтому строим вручную.
+                        HStack {
+                            // Левая часть: NavigationLink → PickleLinkDeviceDetailView.
+                            NavigationLink(destination: PickleLinkDeviceDetailView(
+                                device: device,
+                                pumpManager: viewModel.pumpManager
+                            )) {
+                                HStack {
+                                    Text(device.name)
+                                    Spacer()
+                                    if listDataSource.autoconnectBinding(for: device.id).wrappedValue {
+                                        if let rssi = device.rssi {
+                                            Text(formatRSSI(rssi: rssi))
+                                                .foregroundColor(device.isConnected ? .primary : .secondary)
+                                        } else {
+                                            Image(systemName: "wifi.exclamationmark")
+                                                .imageScale(.large)
+                                                .foregroundColor(guidanceColors.warning)
+                                        }
                                     }
                                 }
                             }
+                            // Правая часть: тоггл autoconnect. Фиксированная ширина = нет «кражи» тапа.
+                            Toggle("", isOn: listDataSource.autoconnectBinding(for: device.id))
+                                .labelsHidden()
+                                .fixedSize()
                         }
                     }
                 }
