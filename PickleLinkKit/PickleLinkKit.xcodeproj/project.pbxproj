@@ -17,6 +17,7 @@
 		BC26FE80CE074F6DAF0FFD3C /* SmartBridgeResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F80BF0F34A146D0B82643FA /* SmartBridgeResponse.swift */; };
 		A0BE48D138F14DDA9CF37845 /* SmartBridgeStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D671AD8E08BD4462AE93CB17 /* SmartBridgeStatus.swift */; };
 		F904B750C7E54A83BDE5B3C1 /* StatusEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AA440849B814B28AE3F01DC /* StatusEvent.swift */; };
+		PL04000000000001 /* BridgeLogEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL04000000000011 /* BridgeLogEntry.swift */; };
 		F039AB985B7A4582A1DD086A /* PickleLinkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA25CFCEC1BE4880B9CC8A28 /* PickleLinkClient.swift */; };
 		44F5FCD209A44FAD9E1BB024 /* DoseProgressEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2439508ECB4948B4BCFDA0EF /* DoseProgressEstimator.swift */; };
 		B5266133473C446B85DDC9C3 /* HistorySync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CC07258D99F4B5684266A9F /* HistorySync.swift */; };
@@ -36,6 +37,7 @@
 		PL02000000000002 /* PickleLinkSettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000012 /* PickleLinkSettingsViewModel.swift */; };
 		PL02000000000003 /* PickleLinkListDataSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000013 /* PickleLinkListDataSource.swift */; };
 		PL02000000000004 /* PickleLinkDeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL02000000000014 /* PickleLinkDeviceDetailView.swift */; };
+		PL04000000000002 /* PickleLinkBridgeLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PL04000000000012 /* PickleLinkBridgeLogView.swift */; };
 		48F446EFFBB34B09950FD8D1 /* FrequencyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02EE2FB045D74179A28D781B /* FrequencyView.swift */; };
 		8D8F77C56E534C34AB96F19A /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 586DE0EF6366454EA8944116 /* PairingView.swift */; };
 		463C8A83013F4A8E9CE6643A /* PumpIDEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9315FB7A718044528CE6BE4A /* PumpIDEntryView.swift */; };
@@ -89,6 +91,7 @@
 		9F80BF0F34A146D0B82643FA /* SmartBridgeResponse.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SmartBridgeResponse.swift; sourceTree = "<group>"; };
 		D671AD8E08BD4462AE93CB17 /* SmartBridgeStatus.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SmartBridgeStatus.swift; sourceTree = "<group>"; };
 		3AA440849B814B28AE3F01DC /* StatusEvent.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = StatusEvent.swift; sourceTree = "<group>"; };
+		PL04000000000011 /* BridgeLogEntry.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = BridgeLogEntry.swift; sourceTree = "<group>"; };
 		AA25CFCEC1BE4880B9CC8A28 /* PickleLinkClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkClient.swift; sourceTree = "<group>"; };
 		2439508ECB4948B4BCFDA0EF /* DoseProgressEstimator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DoseProgressEstimator.swift; sourceTree = "<group>"; };
 		2CC07258D99F4B5684266A9F /* HistorySync.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = HistorySync.swift; sourceTree = "<group>"; };
@@ -105,6 +108,7 @@
 		PL02000000000012 /* PickleLinkSettingsViewModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkSettingsViewModel.swift; sourceTree = "<group>"; };
 		PL02000000000013 /* PickleLinkListDataSource.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkListDataSource.swift; sourceTree = "<group>"; };
 		PL02000000000014 /* PickleLinkDeviceDetailView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkDeviceDetailView.swift; sourceTree = "<group>"; };
+		PL04000000000012 /* PickleLinkBridgeLogView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickleLinkBridgeLogView.swift; sourceTree = "<group>"; };
 		02EE2FB045D74179A28D781B /* FrequencyView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FrequencyView.swift; sourceTree = "<group>"; };
 		586DE0EF6366454EA8944116 /* PairingView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		9315FB7A718044528CE6BE4A /* PumpIDEntryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PumpIDEntryView.swift; sourceTree = "<group>"; };
@@ -196,6 +200,7 @@
 				9F80BF0F34A146D0B82643FA /* SmartBridgeResponse.swift */,
 				D671AD8E08BD4462AE93CB17 /* SmartBridgeStatus.swift */,
 				3AA440849B814B28AE3F01DC /* StatusEvent.swift */,
+				PL04000000000011 /* BridgeLogEntry.swift */,
 			);
 			path = Protocol;
 			sourceTree = "<group>";
@@ -233,6 +238,7 @@
 				PL02000000000012 /* PickleLinkSettingsViewModel.swift */,
 				PL02000000000013 /* PickleLinkListDataSource.swift */,
 				PL02000000000014 /* PickleLinkDeviceDetailView.swift */,
+				PL04000000000012 /* PickleLinkBridgeLogView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -359,6 +365,7 @@
 				BC26FE80CE074F6DAF0FFD3C /* SmartBridgeResponse.swift in Sources */,
 				A0BE48D138F14DDA9CF37845 /* SmartBridgeStatus.swift in Sources */,
 				F904B750C7E54A83BDE5B3C1 /* StatusEvent.swift in Sources */,
+				PL04000000000001 /* BridgeLogEntry.swift in Sources */,
 				F039AB985B7A4582A1DD086A /* PickleLinkClient.swift in Sources */,
 				44F5FCD209A44FAD9E1BB024 /* DoseProgressEstimator.swift in Sources */,
 				B5266133473C446B85DDC9C3 /* HistorySync.swift in Sources */,
@@ -381,6 +388,7 @@
 				PL02000000000002 /* PickleLinkSettingsViewModel.swift in Sources */,
 				PL02000000000003 /* PickleLinkListDataSource.swift in Sources */,
 				PL02000000000004 /* PickleLinkDeviceDetailView.swift in Sources */,
+				PL04000000000002 /* PickleLinkBridgeLogView.swift in Sources */,
 				48F446EFFBB34B09950FD8D1 /* FrequencyView.swift in Sources */,
 				8D8F77C56E534C34AB96F19A /* PairingView.swift in Sources */,
 				463C8A83013F4A8E9CE6643A /* PumpIDEntryView.swift in Sources */,

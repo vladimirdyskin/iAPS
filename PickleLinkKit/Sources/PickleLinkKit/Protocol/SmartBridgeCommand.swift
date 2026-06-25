@@ -28,6 +28,7 @@ public enum SCMD: UInt8, CaseIterable, Sendable {
     case setMaxBasal = 0x17
     case setMaxBolus = 0x18
     case setLED = 0x19
+    case getLog = 0x1A
 }
 
 /// Wire frame: `[seq][cmd_id][params...]`
@@ -161,6 +162,12 @@ extension Data {
 }
 
 public enum EndianRead {
+    public static func u16LE(_ d: Data, _ offset: Int) throws -> UInt16 {
+        guard d.count >= offset + 2 else { throw SmartBridgeError.shortPayload(expected: offset + 2, got: d.count) }
+        let b = [UInt8](d)
+        return UInt16(b[offset]) | (UInt16(b[offset + 1]) << 8)
+    }
+
     public static func u16BE(_ d: Data, _ offset: Int) throws -> UInt16 {
         guard d.count >= offset + 2 else { throw SmartBridgeError.shortPayload(expected: offset + 2, got: d.count) }
         let b = [UInt8](d)

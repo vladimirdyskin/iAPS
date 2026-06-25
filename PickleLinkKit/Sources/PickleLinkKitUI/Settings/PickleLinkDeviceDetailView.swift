@@ -21,6 +21,7 @@
         @State private var statsLoading = false
         @State private var identifyLoading = false
         @State private var errorMessage: String?
+        @State private var showBridgeLog = false
 
         private let rssiTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
@@ -178,6 +179,10 @@
                         }
                     }
                     .disabled(identifyLoading)
+                    // Навигация на экран диагностического лога моста.
+                    NavigationLink(destination: PickleLinkBridgeLogView(pumpManager: pumpManager)) {
+                        Text("Логи моста")
+                    }
                 } else {
                     unavailableRow
                 }

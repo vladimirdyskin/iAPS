@@ -235,6 +235,12 @@
             try await requireClient().setLED(action: action)
         }
 
+        /// 0x1A GET_LOG — скачивает диагностический лог моста и декодирует в строки.
+        public func fetchBridgeLog() async throws -> [BridgeLogLine] {
+            let raw = try await requireClient().fetchLog()
+            return try BridgeLogDecode.parse(raw)
+        }
+
         /// UUID активного подключённого моста (для определения isConnected в UI).
         public var activeBridgeUUID: UUID? {
             poolLock.lock()

@@ -168,4 +168,10 @@ public actor PickleLinkClient {
     public func setLED(action: UInt8) async throws {
         _ = try await session.send(.setLED, params: SCMDParams.setLED(action: action))
     }
+
+    /// 0x1A — GET_LOG. Скачивает диагностический лог моста (фрагментированный, как getHistory).
+    /// Возвращает сырой payload (заголовок + записи). Таймаут 30с — фрагментированный ответ.
+    public func fetchLog(timeout: TimeInterval = 30.0) async throws -> Data {
+        try await session.send(.getLog, timeout: timeout)
+    }
 }
