@@ -3,7 +3,7 @@
     import HealthKit
     import LoopKit
     import LoopKitUI
-    import MinimedKit
+    // MinimedKit не импортируется: PumpModel in-module PickleLinkKit (Medtronic/)
     import PickleLinkKit
     import SwiftUI
     import UIKit

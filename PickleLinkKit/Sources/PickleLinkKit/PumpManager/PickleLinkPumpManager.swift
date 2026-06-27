@@ -3,7 +3,7 @@
     import Foundation
     import HealthKit
     import LoopKit
-    import MinimedKit
+    // MinimedKit не импортируется: PumpModel, SuspendState, UnfinalizedDose — in-module (Medtronic/)
     import os.log
 
     public final class PickleLinkPumpManager: NSObject {
@@ -83,6 +83,11 @@
         // Bolus progress
         private var bolusProgressEstimator: PickleLinkDoseProgressEstimator?
 
+        // BLE-heartbeat (LoopKit): см. setMustProvideBLEHeartbeat/maybeFireBLEHeartbeat.
+        private let heartbeatLock = NSLock()
+        private var mustProvideBLEHeartbeat = false
+        private var lastHeartbeatFire: Date?
+
         // MARK: - Init
 
         public init(state: PickleLinkPumpManagerState) {
@@ -101,11 +106,11 @@
             super.init()
             bleManager.delegate = self
             if let id = state.peripheralIdentifier {
-                // Помечаем закреплённый мост (дефолт-кандидат, если тогглов нет).
-                // НЕ коннектим напрямую — это игнорировало UI-тоггл: закреплённый мост
-                // подключался даже выключенным, а включённый оставался резервом.
-                // Коннект делает BLEManager.connectAllEnabled (на poweredOn/restore),
-                // уважая тогглы (enabledIDs = autoconnectIDs, иначе закреплённый).
+                // Помечаем закреплённый мост. markAsPumpPeripheral ОДИН раз засевает его
+                // в autoconnect (тоггл ON по умолчанию), дальше тоггл — единственный
+                // источник истины. НЕ коннектим напрямую. Коннект делает
+                // BLEManager.connectAllEnabled (на poweredOn/restore), строго по тогглам
+                // (enabledIDs = autoconnectIDs).
                 bleManager.markAsPumpPeripheral(id: id)
             }
         }
@@ -344,7 +349,33 @@
             stateObserverQueues[ObjectIdentifier(observer)] = nil
         }
 
-        public func setMustProvideBLEHeartbeat(_: Bool) {}
+        // BLE-heartbeat (LoopKit): iAPS требует периодический «пульс», чтобы лупиться
+        // в фоне, когда нет другого BLE-источника (pumpManagerMustProvideBLEHeartbeat).
+        // Прошивка шлёт status-тик каждые ~2с — транслируем его в
+        // pumpManagerBLEHeartbeatDidFire, но НЕ чаще раза в 60с (heartbeat() в iAPS
+        // запускает оценку петли — это дорого). Без этого iAPS не держит коннект в
+        // фоне → iOS забирает линк после фонового окна (reason 19).
+        // (Хранимые поля heartbeatLock/mustProvideBLEHeartbeat/lastHeartbeatFire — в теле класса.)
+        public func setMustProvideBLEHeartbeat(_ flag: Bool) {
+            heartbeatLock.lock()
+            mustProvideBLEHeartbeat = flag
+            heartbeatLock.unlock()
+        }
+
+        private func maybeFireBLEHeartbeat() {
+            heartbeatLock.lock()
+            let now = Date()
+            let due = mustProvideBLEHeartbeat &&
+                (lastHeartbeatFire.map { now.timeIntervalSince($0) >= 60 } ?? true)
+            if due { lastHeartbeatFire = now }
+            heartbeatLock.unlock()
+            guard due else { return }
+            // pumpManagerBLEHeartbeatDidFire требует processQueue (== delegateQueue).
+            delegateQueue?.async { [weak self] in
+                guard let self else { return }
+                self.lockedDelegate?.pumpManagerBLEHeartbeatDidFire(self)
+            }
+        }
 
         // MARK: Bolus
 
@@ -642,11 +673,23 @@
             let filterDate = startDateToFilter()
             let sync = PickleLinkHistorySync(client: c, pumpModel: state.pumpModel, timeZone: state.timeZone)
             let result = try await sync.sync(lastSyncedPage: state.lastSyncedHistoryPage, after: filterDate)
-            guard !result.events.isEmpty || result.newLastSyncedPage != state.lastSyncedHistoryPage else { return }
+            guard !result.events.isEmpty || result.newLastSyncedPage != state.lastSyncedHistoryPage else {
+                // Новых событий нет, но бэкафилл всё равно нужен если не выполнялся.
+                if !state.backfillDone {
+                    Task { [weak self] in await self?.backfillEventDates() }
+                }
+                return
+            }
             mutateState { $0.lastSyncedHistoryPage = result.newLastSyncedPage }
 
             // Обновляем даты смены резервуара и набора (зеркало MinimedPumpManager.updateLastEventDates).
             updateLastEventDates(from: result.events)
+
+            // Бэкафилл: одноразовый глубокий поиск rewind/setChange без фильтра по дате.
+            // Запускаем в отдельном Task чтобы не блокировать поллинг — RF-дорогая операция.
+            if !state.backfillDone {
+                Task { [weak self] in await self?.backfillEventDates() }
+            }
 
             // Аннотируем дозы типом инсулина (зеркало MinimedPumpManager ~стр. 760-766).
             let insulinType = state.insulinType
@@ -706,6 +749,36 @@
                         state.lastRewindDate = rewind
                     }
                 }
+            }
+        }
+
+        /// Однократный бэкафилл дат смены резервуара и набора.
+        /// Читает до 16 страниц истории без фильтра по дате — ищет самые свежие
+        /// rewind/setChange которые могли быть старше startDate и не попали в обычный синк.
+        /// Вызывается в отдельном Task из syncHistory — не блокирует поллинг.
+        private func backfillEventDates() async {
+            guard let c = try? requireClient() else { return }
+            let sync = PickleLinkHistorySync(client: c, pumpModel: state.pumpModel, timeZone: state.timeZone)
+            do {
+                let (rewindDate, setChangeDate) = try await sync.findLastRewindAndSetChange(maxPages: 16)
+                mutateState { s in
+                    if let d = rewindDate, s.lastRewindDate == nil || d > s.lastRewindDate! {
+                        s.lastRewindDate = d
+                    }
+                    if let d = setChangeDate, s.lastSetChangeDate == nil || d > s.lastSetChangeDate! {
+                        s.lastSetChangeDate = d
+                    }
+                    s.backfillDone = true
+                }
+                os_log(
+                    "Backfill done: rewind=%{public}@, setChange=%{public}@",
+                    log: log, type: .info,
+                    rewindDate.map { String(describing: $0) } ?? "nil",
+                    setChangeDate.map { String(describing: $0) } ?? "nil"
+                )
+            } catch {
+                // Не удалось — попробуем на следующем цикле (backfillDone остаётся false).
+                os_log("Backfill failed: %{public}@", log: log, type: .error, String(describing: error))
             }
         }
 
@@ -830,6 +903,8 @@
             case let .frequencyChanged(hz):
                 os_log("FREQUENCY_CHANGED → %d Hz", log: log, type: .info, Int(hz))
                 mutateState { $0.frequencyHz = hz }
+            case .heartbeat:
+                maybeFireBLEHeartbeat()
             case .unknown:
                 break // forward-compat: ignore unknown events
             }

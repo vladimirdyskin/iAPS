@@ -1,7 +1,7 @@
 #if canImport(LoopKit)
     import Foundation
     import LoopKit
-    import MinimedKit
+    // MinimedKit не импортируется: PumpModel, SuspendState, UnfinalizedDose — in-module (Medtronic/)
 
     public struct PickleLinkPumpManagerState: RawRepresentable, Equatable {
         public typealias RawValue = [String: Any]
@@ -54,6 +54,11 @@
         /// Дата последней смены набора (fixed prime = смена инфузионного сета). Зеркало MinimedPumpManagerState.lastSetChangeDate.
         public var lastSetChangeDate: Date?
 
+        /// Однократный бэкафилл истории выполнен — не повторять поиск rewind/setChange
+        /// без фильтра по дате (дорого по RF). Сбрасывается в false при необходимости
+        /// принудительного повтора (например при смене помпы).
+        public var backfillDone: Bool
+
         public init(
             isOnboarded: Bool,
             pumpID: String,
@@ -74,6 +79,7 @@
             self.timeZone = timeZone
             self.suspendState = suspendState
             self.insulinType = insulinType
+            backfillDone = false
         }
 
         // MARK: - RawRepresentable
@@ -125,6 +131,7 @@
             lastWatchdogAt = rawValue["lastWatchdogAt"] as? Date
             lastRewindDate = rawValue["lastRewindDate"] as? Date
             lastSetChangeDate = rawValue["lastSetChangeDate"] as? Date
+            backfillDone = rawValue["backfillDone"] as? Bool ?? false
             if let rawSchedule = rawValue["basalSchedule"] as? BasalRateSchedule.RawValue {
                 basalSchedule = BasalRateSchedule(rawValue: rawSchedule)
             }
@@ -151,6 +158,7 @@
             value["lastWatchdogAt"] = lastWatchdogAt
             value["lastRewindDate"] = lastRewindDate
             value["lastSetChangeDate"] = lastSetChangeDate
+            value["backfillDone"] = backfillDone
             value["basalSchedule"] = basalSchedule?.rawValue
             return value
         }

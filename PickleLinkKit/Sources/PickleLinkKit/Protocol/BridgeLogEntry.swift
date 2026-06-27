@@ -187,7 +187,10 @@ public enum BridgeLogDecode {
     private static func describeSYS(_ e: BridgeLogEntry) -> (String, BridgeLogSeverity) {
         switch e.code {
         case 1:
-            return ("SYS BOOT reason=\(e.a)", e.a != 0 ? .warning : .normal)
+            let cause = bootResetCause(e.a)
+            // watchdog / brownout / cpu_lockup — тревожные причины ребута; POR/PIN штатные.
+            let alarming = (e.a & 0x0114) != 0 // WATCHDOG|BROWNOUT|CPU_LOCKUP
+            return ("SYS BOOT (\(cause))", alarming ? .error : .normal)
         case 2:
             return ("SYS WATCHDOG errors=\(e.a)", .error)
         case 3:
@@ -237,15 +240,17 @@ public enum BridgeLogDecode {
     }
 
     private static func sstatName(_ raw: UInt16) -> String {
+        // Совпадает с SSTAT_* прошивки (main/smart_bridge.h).
         switch raw {
         case 0: return "OK"
         case 1: return "pumpNotResponding"
-        case 2: return "timeout"
-        case 3: return "invalidParam"
-        case 4: return "notConfigured"
-        case 5: return "radioError"
-        case 6: return "nak"
-        case 7: return "busy"
+        case 2: return "pumpError"
+        case 3: return "crcError"
+        case 4: return "invalidParam"
+        case 5: return "notConfigured"
+        case 6: return "busy"
+        case 7: return "internalError"
+        case 8: return "timeout"
         default: return "err\(raw)"
         }
     }
@@ -256,5 +261,18 @@ public enum BridgeLogDecode {
         case 19: return " (remote terminated)"
         default: return ""
         }
+    }
+
+    /// Декод маски причины сброса (Zephyr hwinfo RESET_*, low 16 бит) в читаемый вид.
+    private static func bootResetCause(_ mask: UInt16) -> String {
+        if mask == 0 { return "unknown" }
+        let map: [(UInt16, String)] = [
+            (0x0001, "PIN"), (0x0002, "SOFTWARE"), (0x0004, "BROWNOUT"), (0x0008, "POR"),
+            (0x0010, "WATCHDOG"), (0x0020, "DEBUG"), (0x0040, "SECURITY"), (0x0080, "LPWAKE"),
+            (0x0100, "CPU_LOCKUP"), (0x0200, "PARITY"), (0x0400, "PLL"), (0x0800, "CLOCK"),
+            (0x1000, "HARDWARE"), (0x2000, "USER"), (0x4000, "TEMP")
+        ]
+        let parts = map.filter { mask & $0.0 != 0 }.map(\.1)
+        return parts.isEmpty ? "0x\(String(mask, radix: 16))" : parts.joined(separator: "|")
     }
 }

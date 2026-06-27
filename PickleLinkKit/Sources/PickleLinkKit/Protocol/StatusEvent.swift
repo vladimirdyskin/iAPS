@@ -13,6 +13,9 @@ public enum StatusEvent: Equatable, Sendable {
     case watchdogPending
     /// Auto-mmtune changed radio frequency. Hz little-endian.
     case frequencyChanged(hz: UInt32)
+    /// Periodic BLE heartbeat (прошивочный status-тик ~2с). Держит iOS-приложение
+    /// живым в фоне; транслируется в LoopKit BLE-heartbeat (см. PumpManager).
+    case heartbeat
     /// Forward-compat: unknown event_type retained as raw.
     case unknown(eventType: UInt8, data: Data)
 
@@ -37,6 +40,8 @@ public enum StatusEvent: Equatable, Sendable {
         case 0x06:
             guard let hz = try? EndianRead.u32LE(payload, 0) else { return nil }
             self = .frequencyChanged(hz: hz)
+        case 0x07:
+            self = .heartbeat
         default:
             self = .unknown(eventType: first, data: payload)
         }

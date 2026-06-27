@@ -11,7 +11,6 @@
         @State private var loading = false
         @State private var errorMessage: String?
         @State private var showShareSheet = false
-        @State private var shareText = ""
 
         var body: some View {
             Group {
@@ -38,7 +37,6 @@
                     .disabled(loading)
 
                     Button {
-                        shareText = exportText()
                         showShareSheet = true
                     } label: {
                         Label("Поделиться", systemImage: "square.and.arrow.up")
@@ -47,7 +45,9 @@
                 }
             }
             .sheet(isPresented: $showShareSheet) {
-                ActivityView(activityItems: [shareText])
+                // Текст вычисляем здесь (свежий lines), а не через @State до показа —
+                // иначе sheet захватывает старое пустое значение и файл пустой.
+                ActivityView(activityItems: [exportText()])
             }
             .onAppear {
                 Task { await fetchLog() }

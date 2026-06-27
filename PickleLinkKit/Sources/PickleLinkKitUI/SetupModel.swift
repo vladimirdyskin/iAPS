@@ -3,7 +3,7 @@
     import CoreBluetooth
     import Foundation
     import LoopKit
-    import MinimedKit
+    // MinimedKit не импортируется: PumpModel in-module PickleLinkKit (Medtronic/)
     import PickleLinkKit
 
     @MainActor final class PickleLinkSetupModel: ObservableObject {

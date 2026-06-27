@@ -1,7 +1,7 @@
 #if canImport(LoopKit)
     import Foundation
     import LoopKit
-    import MinimedKit
+    // MinimedKit не импортируется: PumpModel, HistoryPage, TimestampedHistoryEvent — in-module (Medtronic/)
 
     struct PickleLinkHistorySync {
         let client: PickleLinkClient
@@ -92,6 +92,67 @@
             let page = try HistoryPage(pageData: pageData, pumpModel: pumpModel)
             let result = page.timestampedEvents(after: startDate, timeZone: timeZone, model: pumpModel)
             return (result.events, result.hasMoreEvents && !result.cancelledEarly)
+        }
+
+        /// Однократный бэкафилл: сканирует историю без фильтра по дате, ищет
+        /// самое свежее событие смены резервуара (.rewind) и смены набора
+        /// (.replaceComponent(.infusionSet)). Останавливается, когда найдены
+        /// оба события или достигнут лимит страниц.
+        ///
+        /// - Parameter maxPages: максимум страниц для чтения (по умолчанию 16).
+        /// - Returns: (rewindDate, setChangeDate) — nil если событие не найдено.
+        func findLastRewindAndSetChange(maxPages: UInt8 = 16) async throws -> (rewindDate: Date?, setChangeDate: Date?) {
+            // Используем distantPast как startDate — timestampedEvents вернёт ВСЕ
+            // события страницы (ни одно не отсекается по дате), hasMoreEvents = true.
+            let epoch = Date.distantPast
+            var latestRewind: Date?
+            var latestSetChange: Date?
+
+            var hadError = false
+            for pageIndex in 0 ..< maxPages {
+                let raw: Data
+                do {
+                    raw = try await client.getHistory(page: pageIndex)
+                } catch {
+                    // Слабый сигнал / firmware-сбой на этой странице — НЕ бросаем весь
+                    // скан, пробуем следующую. Помечаем, что скан получился неполным.
+                    hadError = true
+                    continue
+                }
+                guard let (events, _) = try? decode(raw, after: epoch) else {
+                    hadError = true
+                    continue
+                }
+                let pumpEvents = events.pumpEvents(from: pumpModel)
+
+                for event in pumpEvents {
+                    switch event.type {
+                    case .rewind:
+                        if latestRewind == nil || event.date > latestRewind! {
+                            latestRewind = event.date
+                        }
+                    case .replaceComponent(componentType: .infusionSet):
+                        if latestSetChange == nil || event.date > latestSetChange! {
+                            latestSetChange = event.date
+                        }
+                    default:
+                        break
+                    }
+                }
+
+                // Оба события найдены — дальше читать не нужно.
+                if latestRewind != nil, latestSetChange != nil {
+                    break
+                }
+            }
+
+            // Ничего не нашли И были сбои чтения — бросаем, чтобы вызывающий не помечал
+            // backfillDone=true с пустотой (иначе «Возраст» скрыт навсегда) и повторил позже.
+            if latestRewind == nil, latestSetChange == nil, hadError {
+                throw SmartBridgeError.timeout
+            }
+
+            return (latestRewind, latestSetChange)
         }
 
         private func dedupe(_ events: [NewPumpEvent]) -> [NewPumpEvent] {

@@ -1,7 +1,7 @@
 #if canImport(LoopKit)
     import Foundation
     import LoopKit
-    import MinimedKit
+    // MinimedKit не импортируется: PumpModel — in-module (Medtronic/)
 
     final class PickleLinkDoseProgressEstimator: DoseProgressTimerEstimator {
         let dose: DoseEntry

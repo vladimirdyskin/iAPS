@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 #if canImport(CoreBluetooth)
     import CoreBluetooth
 
@@ -28,18 +29,34 @@ import Foundation
 
         private let restoreID: String
         private var pendingConnectIDs: Set<UUID> = []
+
+        /// Диагностика BLE-жизненного цикла (os_log). Снимается с устройства через
+        /// `log collect`/sysdiagnose, фильтр: subsystem com.pickle.PickleLinkKit, category BLE.
+        /// Нужна для разбора интермиттентных отвалов моста — пишет reason разрыва.
+        private static let bleLog = OSLog(subsystem: "com.pickle.PickleLinkKit", category: "BLE")
+
+        /// Расшифровка ошибки CoreBluetooth для лога: домен#код + текст (или "clean" если nil).
+        private static func errStr(_ error: Error?) -> String {
+            guard let e = error as NSError? else { return "clean" }
+            return "\(e.domain)#\(e.code) \(e.localizedDescription)"
+        }
+
         // CoreBluetooth silently drops connections if the CBPeripheral is not
         // strongly retained — keep discovered/connecting peripherals here.
         private var peripheralRefs: [UUID: CBPeripheral] = [:]
 
-        // UUID «главного» периферийного устройства (активная помпа).
-        // Реконнектится при обрыве вне зависимости от UI-тоггла autoconnect.
-        private var pumpPeripheralID: UUID?
-
-        /// Вызывается PumpManager при инициализации, чтобы пометить мост активной помпы.
-        /// Этот id всегда переподключается при обрыве.
+        /// Вызывается PumpManager при инициализации с закреплённым мостом помпы.
+        /// ОДИН раз засевает его в autoconnect (тоггл ON по умолчанию), если автоконнект
+        /// ещё ни разу не настраивался. Раньше дефолт давал скрытый fallback в enabledIDs
+        /// → тоггл показывал OFF при подключённом мосте (рассинхрон). Флаг гарантирует
+        /// «один раз»: дальше пользователь волен выключить всё.
         public func markAsPumpPeripheral(id: UUID) {
-            pumpPeripheralID = id
+            let seededKey = "\(restoreID).autoconnectSeeded"
+            guard !UserDefaults.standard.bool(forKey: seededKey) else { return }
+            if autoconnectIDs.isEmpty {
+                autoconnectIDs = [id]
+            }
+            UserDefaults.standard.set(true, forKey: seededKey)
         }
 
         // ОДИН активный коннект за раз. С несколькими одновременными коннектами мосты
@@ -48,14 +65,11 @@ import Foundation
         // их сигнал берём из скана. При обрыве/уходе из зоны — переключаемся на лучший.
         private var activeID: UUID?
 
-        /// Включённые мосты-кандидаты = ПОЛЬЗОВАТЕЛЬСКИЕ тогглы. Выключенный тоггл
-        /// исключает мост ПОЛНОСТЬЮ, даже если он закреплён как помпа. Если не выбран
-        /// ни один (первый запуск) — закреплённая помпа как дефолт.
-        private var enabledIDs: Set<UUID> {
-            if !autoconnectIDs.isEmpty { return autoconnectIDs }
-            if let p = pumpPeripheralID { return [p] }
-            return []
-        }
+        /// Включённые мосты = ПОЛЬЗОВАТЕЛЬСКИЕ тогглы (autoconnectIDs) — ЕДИНЫЙ источник
+        /// истины и для коннекта, и для UI-тоггла (иначе рассинхрон: «выкл», но
+        /// подключён). Дефолт (закреплённая помпа) задаётся ОДИН раз через seed в
+        /// markAsPumpPeripheral, а не скрытым fallback здесь.
+        private var enabledIDs: Set<UUID> { autoconnectIDs }
 
         /// Поставить pending-коннект ко ВСЕМ включённым мостам по UUID (retrievePeripherals,
         /// БЕЗ скана). `central.connect()` — pending: срабатывает в ФОНЕ/при блокировке,
@@ -71,6 +85,7 @@ import Foundation
                 peripheralRefs[id] = peripheral
                 pendingConnectIDs.insert(id)
                 central.connect(peripheral, options: nil)
+                os_log("BLE reconnect pending %{public}@", log: Self.bleLog, type: .info, id.uuidString)
             }
         }
 
@@ -252,6 +267,16 @@ import Foundation
 
         public func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
             pendingConnectIDs.remove(peripheral.identifier)
+            // Уже есть ЗДОРОВЫЙ активный коннект к ДРУГОМУ мосту — не воруем.
+            // Это сработал лишний pending-коннект, поставленный connectAllEnabled, когда
+            // активного ещё не было (central.connect висит бессрочно). Если его принять —
+            // ping-pong: новичок отбирает active и рвёт рабочий мост (reason=19), в т.ч.
+            // ПОСРЕДИ GET_HISTORY. Гасим новичка, активный не трогаем. Переключение на
+            // другой мост — только при реальном обрыве активного (didDisconnect → roam).
+            if let a = activeID, a != peripheral.identifier, connected[a] != nil {
+                central.cancelPeripheralConnection(peripheral)
+                return
+            }
             // Подключился мост, который НЕ включён тогглом (гонка: тоггл выключили, пока
             // pending-коннект был в полёте). Отклоняем — активным держим только
             // включённый мост, иначе UI «перевёрнут» (выключенный показан активным).
@@ -262,6 +287,7 @@ import Foundation
                 return
             }
             activeID = peripheral.identifier
+            os_log("BLE connected %{public}@", log: Self.bleLog, type: .info, peripheral.identifier.uuidString)
             // Скан НЕ останавливаем — резервные мосты должны показывать живой RSSI
             // (иначе их значок «перечёркнут»). Один коннект + скан стабильны.
             // Подчистить любые прочие коннекты — держим строго один.
@@ -296,6 +322,13 @@ import Foundation
         )
         {
             pendingConnectIDs.remove(peripheral.identifier)
+            os_log(
+                "BLE failToConnect %{public}@ err=%{public}@",
+                log: Self.bleLog,
+                type: .error,
+                peripheral.identifier.uuidString,
+                Self.errStr(error)
+            )
             delegate?.bleManager(self, didDisconnect: peripheral.identifier, error: error)
             // Не достучались — освобождаем слот и заново ставим pending-коннект ко всем
             // включённым (фоновый, без скана). central.connect() сам ждёт появления моста
@@ -310,6 +343,18 @@ import Foundation
             error: Error?
         )
         {
+            let wasActive = peripheral.identifier == activeID
+            // reason пуст (clean) = локальный cancelPeripheralConnection (наш роуминг/disconnect);
+            // непустой (напр. CBErrorDomain#7 peripheralDisconnected, #6 connectionTimeout) =
+            // мост пропал/перезагрузился/supervision timeout. Ключевая улика отвала.
+            os_log(
+                "BLE DISCONNECT %{public}@ reason=%{public}@ wasActive=%{public}d",
+                log: Self.bleLog,
+                type: .error,
+                peripheral.identifier.uuidString,
+                Self.errStr(error),
+                wasActive ? 1 : 0
+            )
             connected.removeValue(forKey: peripheral.identifier)
             discovered[peripheral.identifier]?.isConnected = false
             delegate?.bleManager(self, didDisconnect: peripheral.identifier, error: error)
