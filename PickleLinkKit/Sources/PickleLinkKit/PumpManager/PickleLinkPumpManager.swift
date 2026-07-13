@@ -83,10 +83,86 @@
         // Bolus progress
         private var bolusProgressEstimator: PickleLinkDoseProgressEstimator?
 
+        // Connect-watchdog: если после BLE-коннекта GATT не поднялся (peripheralIsReady не
+        // пришёл) за 12с — форсируем разрыв, чтобы BLEManager обнулил activeID и переставил
+        // pending-коннект. Иначе полу-коннект (краевой сигнал при возврате в зону) держит
+        // activeID занятым: реконнект заблокирован, а команды не идут → клин. Доступ с main
+        // (BLE-колбэки идут на main-очередь CBCentralManager).
+        private var connectWatchdogs: [UUID: DispatchWorkItem] = [:]
+
+        private func scheduleReadyWatchdog(_ id: UUID) {
+            connectWatchdogs[id]?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.connectWatchdogs[id] = nil
+                poolLock.lock()
+                let ready = bridges[id]?.ready ?? false
+                poolLock.unlock()
+                guard !ready else { return }
+                os_log(
+                    "Connect watchdog: %{public}@ not ready in 12s → force reconnect",
+                    log: self.log, type: .error, id.uuidString
+                )
+                self.bleManager.disconnect(id: id) // cancel → didDisconnect → activeID=nil → pending
+            }
+            connectWatchdogs[id] = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: work)
+        }
+
+        private func cancelReadyWatchdog(_ id: UUID) {
+            connectWatchdogs[id]?.cancel()
+            connectWatchdogs[id] = nil
+        }
+
         // BLE-heartbeat (LoopKit): см. setMustProvideBLEHeartbeat/maybeFireBLEHeartbeat.
         private let heartbeatLock = NSLock()
         private var mustProvideBLEHeartbeat = false
         private var lastHeartbeatFire: Date?
+
+        // Гейт свежести данных помпы (аудит R3, зеркало Minimed isPumpDataStale):
+        // не гонять полный RF-опрос чаще, чем раз в 4 мин (CGM-тик может быть 1-мин).
+        private let refreshLock = NSLock()
+        private var lastPumpDataRefresh: Date?
+
+        // Одиночный бэкафилл (аудит B7): параллельные 16-страничные проходы
+        // забивают радио и морят голодом команды дозирования.
+        private var backfillInProgress = false
+
+        // Троттл автосинка часов: SET_CLOCK — long-команда, на слабом радио стабильно
+        // падает (DECODE_FAIL). Без троттла попытка идёт каждые 4 мин (staleness-гейт),
+        // засоряя лог. Пытаемся не чаще раза в час — этого хватает против дрейфа
+        // reconcile-окна, а спам на плохом радио убирает.
+        private var lastClockSyncAttempt: Date?
+
+        // Синхронные обёртки над refreshLock (голый lock()/unlock() недоступен из async —
+        // зовём эти хелперы из Task, лок берётся в синхронном контексте).
+        private func readLastPumpDataRefresh() -> Date? {
+            refreshLock.lock()
+            defer { refreshLock.unlock() }
+            return lastPumpDataRefresh
+        }
+
+        private func markPumpDataRefreshed() {
+            refreshLock.lock()
+            lastPumpDataRefresh = Date()
+            refreshLock.unlock()
+        }
+
+        /// Пытается захватить single-flight-слот бэкафилла. true — слот наш (вызвать
+        /// endBackfill в конце); false — бэкафилл уже идёт, выходим.
+        private func beginBackfill() -> Bool {
+            refreshLock.lock()
+            defer { refreshLock.unlock() }
+            if backfillInProgress { return false }
+            backfillInProgress = true
+            return true
+        }
+
+        private func endBackfill() {
+            refreshLock.lock()
+            backfillInProgress = false
+            refreshLock.unlock()
+        }
 
         // MARK: - Init
 
@@ -400,47 +476,126 @@
             completion: @escaping (PumpManagerError?) -> Void
         ) {
             Task {
-                do {
-                    let c = try requireClient()
-                    let mu = PickleLinkConversions.unitsToMilliunits(units)
-                    // Снимок state ДО await — pumpModel/insulinType не должны «уехать».
-                    let pumpModel = self.state.pumpModel
-                    let insulinType = self.state.insulinType
-                    let start = Date()
-                    try await c.bolus(amountMilliunits: mu)
+                let c: PickleLinkClient
+                do { c = try requireClient() }
+                catch { completion(.connection(nil))
+                    return }
 
-                    // Болюс 0x0D принят помпой → НЕМЕДЛЕННО фиксируем дозу. Болюс НЕ
-                    // идемпотентен: если не записать, Loop сочтёт его несостоявшимся и
-                    // повторит → двойная доза. Подтверждение статусом — best-effort и
-                    // НЕ основание считать болюс неудачным (малая доза может пройти
-                    // быстрее, чем придёт bolusing=true).
-                    let duration = pumpModel.bolusDeliveryTime(units: units)
+                let mu = PickleLinkConversions.unitsToMilliunits(units)
+                // Снимок state ДО await — pumpModel/insulinType не должны «уехать».
+                let pumpModel = self.state.pumpModel
+                let insulinType = self.state.insulinType
+
+                // Гард (аудит C4, зеркало MinimedKit ~1264-1274): предыдущий болюс ещё
+                // КАПАЕТ → отказ. Без гарда гонка двух enactBolus (SMB vs ручной) через
+                // параллельный reconcile теряла дозу из state → двойной учёт от истории.
+                // ЗАВЕРШЁННЫЙ прежний болюс архивируем в pendingDoses (ждёт reconcile).
+                var previousInProgress = false
+                self.mutateState { s in
+                    if let prev = s.unfinalizedBolus {
+                        if prev.isFinished {
+                            s.pendingDoses.append(prev)
+                            s.unfinalizedBolus = nil
+                        } else {
+                            previousInProgress = true
+                        }
+                    }
+                }
+                guard !previousInProgress else {
+                    completion(.deviceState(nil)) // bolus in progress
+                    return
+                }
+
+                let duration = pumpModel.bolusDeliveryTime(units: units)
+
+                do {
+                    try await c.bolus(amountMilliunits: mu)
+                    // Успех → фиксируем дозу. startTime = СЕЙЧАС (после подтверждения):
+                    // wakeup мог съесть до ~15с, ранний start завышал прогресс и съедал
+                    // запас reconcile-окна (аудит MINOR).
                     let dose = UnfinalizedDose(
-                        bolusAmount: units, startTime: start, duration: duration,
+                        bolusAmount: units, startTime: Date(), duration: duration,
                         insulinType: insulinType,
                         automatic: activationType.isAutomatic
                     )
                     self.mutateState { $0.unfinalizedBolus = dose }
                     completion(nil)
-                } catch let e as SmartBridgeError {
-                    completion(self.mapError(e))
                 } catch {
-                    completion(.communication(nil))
+                    // КРИТИЧНО против двойной дозы. Болюс НЕ идемпотентен и мог УЖЕ пройти на
+                    // помпе, даже если ответ моста потерян (обрыв BLE / битый ACK / timeout).
+                    if self.bolusDefinitelyNotDelivered(error) {
+                        // Мост/помпа отвергли ДО подачи (invalidParam/notConfigured/NAK-rewind)
+                        // → доза ТОЧНО не начиналась → НЕ пишем, сообщаем ошибку.
+                        completion((error as? SmartBridgeError).map(self.mapError) ?? .communication(nil))
+                    } else {
+                        // НЕОПРЕДЕЛЁННОСТЬ (timeout/обрыв/pumpNotResponding/SSTAT_UNCERTAIN):
+                        // болюс мог пройти → ФИКСИРУЕМ дозу и возвращаем успех. Так IOB
+                        // учитывает её сразу → oref НЕ порекомендует повтор. Если болюс на
+                        // деле не прошёл — фантом уйдёт из state по reconcile (переучёт
+                        // безопаснее двойной дозы).
+                        let dose = UnfinalizedDose(
+                            bolusAmount: units, startTime: Date(), duration: duration,
+                            insulinType: insulinType,
+                            automatic: activationType.isAutomatic
+                        )
+                        self.mutateState { $0.unfinalizedBolus = dose }
+                        os_log(
+                            "Bolus UNCERTAIN (%{public}@) — recorded to prevent double-dose",
+                            log: self.log, type: .error, String(describing: error)
+                        )
+                        completion(nil)
+                    }
                 }
+            }
+        }
+
+        /// Ошибка болюса, при которой доза ТОЧНО не доставлена (отказ ДО физической подачи):
+        /// invalidParam/notConfigured — мост отверг до радио; pumpError — помпа явно
+        /// отвергла (NAK: rewind/suspend); busy — очередь моста полна, команда не принята
+        /// (аудит B5); SSTAT timeout — TTL-drop из очереди 1.4.5 (протухла ДО исполнения);
+        /// SSTAT internalError — мёртвое радио 1.4.5 (отказ до dispatch);
+        /// characteristicsMissing — GATT-записи не было.
+        /// НЕОПРЕДЕЛЁННОСТЬ (дозу фиксируем — защита от двойной дозы): client-side
+        /// .timeout (ответ мог потеряться ПОСЛЕ исполнения!), обрыв, SSTAT_UNCERTAIN 0x09,
+        /// pumpNotResponding — НАМЕРЕННО uncertain: на прошивке <1.4.5 (второй мост!)
+        /// этот статус покрывал и фазу-2 (доза ушла) — фантом безопаснее двойной дозы.
+        private func bolusDefinitelyNotDelivered(_ error: Error) -> Bool {
+            guard let e = error as? SmartBridgeError else { return false }
+            switch e {
+            case let .statusError(s, _):
+                return s == .invalidParam || s == .notConfigured || s == .pumpError || s == .busy
+                    || s == .timeout || s == .internalError
+            case .characteristicsMissing:
+                return true
+            default:
+                return false
             }
         }
 
         public func cancelBolus(completion: @escaping (PumpManagerResult<DoseEntry?>) -> Void) {
             // Прерываем болюс через suspend (0x0E) — как MinimedKit cancelBolus:1333.
             // Болюс не идемпотентен: suspend гарантированно останавливает подачу.
+            // Аудит C1 (зеркало Minimed runSuspendResumeOnSession 333-356): фиксируем
+            // ДОСТАВЛЕННУЮ часть дозы (cancel(at:) пересчитывает units по прогрессу),
+            // переносим в pendingDoses (для reconcile с историей — иначе history-событие
+            // задвоит IOB), пишем suspend-дозу (oref должен знать, что базал остановлен).
             Task {
                 do {
                     try await requireClient().suspend() // 0x0E
-                    self.mutateState {
-                        $0.suspendState = .suspended(Date())
-                        $0.unfinalizedBolus = nil
+                    let now = Date()
+                    var canceledEntry: DoseEntry?
+                    self.mutateState { s in
+                        s.suspendState = .suspended(now)
+                        if var b = s.unfinalizedBolus {
+                            b.cancel(at: now, pumpModel: s.pumpModel)
+                            s.pendingDoses.append(b)
+                            canceledEntry = DoseEntry(b)
+                            s.unfinalizedBolus = nil
+                        }
+                        s.pendingDoses.append(UnfinalizedDose(suspendStartTime: now))
                     }
-                    completion(.success(nil))
+                    self.reportPendingDoses() // немедленно в IOB, не ждём syncHistory
+                    completion(.success(canceledEntry))
                 } catch {
                     completion(.failure(.communication(nil)))
                 }
@@ -459,7 +614,17 @@
                     let c = try requireClient()
                     if duration <= 0 {
                         try await c.cancelTempBasal() // 0x0A
-                        self.mutateState { $0.unfinalizedTempBasal = nil }
+                        // Прежний незавершённый темп НЕ обнуляем молча (аудит B4, зеркало
+                        // Minimed 1390-1392): укорачиваем по факту отмены и переносим в
+                        // pendingDoses — иначе доставленная часть темпа теряется из IOB.
+                        let now = Date()
+                        self.mutateState { s in
+                            if var prev = s.unfinalizedTempBasal {
+                                prev.cancel(at: now, pumpModel: s.pumpModel)
+                                s.pendingDoses.append(prev)
+                            }
+                            s.unfinalizedTempBasal = nil
+                        }
                         completion(nil)
                         return
                     }
@@ -471,7 +636,18 @@
                         tempBasalRate: unitsPerHour, startTime: start,
                         duration: duration, insulinType: self.state.insulinType, automatic: true
                     )
-                    self.mutateState { $0.unfinalizedTempBasal = dose }
+                    self.mutateState { s in
+                        // Успешный новый темп ⇒ помпа не suspended (аудит B4, зеркало
+                        // Minimed 1381-1386).
+                        s.suspendState = .resumed(start)
+                        // Прежний незавершённый темп переносим в pendingDoses (тот же
+                        // перенос, что и в ветке отмены) — не затираем его новым.
+                        if var prev = s.unfinalizedTempBasal {
+                            prev.cancel(at: start, pumpModel: s.pumpModel)
+                            s.pendingDoses.append(prev)
+                        }
+                        s.unfinalizedTempBasal = dose
+                    }
                     completion(nil)
                 } catch let e as SmartBridgeError {
                     completion(self.mapError(e))
@@ -487,7 +663,21 @@
             Task {
                 do {
                     try await requireClient().suspend() // 0x0E
-                    self.mutateState { $0.suspendState = .suspended(Date()) }
+                    // Аудит B2 (зеркало Minimed runSuspendResumeOnSession 333-356):
+                    // фиксируем доставленную часть болюса, переносим в pendingDoses (для
+                    // reconcile с историей), пишем suspend-дозу. oref должен увидеть
+                    // остановку базала СРАЗУ, не дожидаясь истории.
+                    let now = Date()
+                    self.mutateState { s in
+                        s.suspendState = .suspended(now)
+                        if var b = s.unfinalizedBolus {
+                            b.cancel(at: now, pumpModel: s.pumpModel)
+                            s.pendingDoses.append(b)
+                            s.unfinalizedBolus = nil
+                        }
+                        s.pendingDoses.append(UnfinalizedDose(suspendStartTime: now))
+                    }
+                    self.reportPendingDoses()
                     completion(nil)
                 } catch { completion(error) }
             }
@@ -497,7 +687,17 @@
             Task {
                 do {
                     try await requireClient().resume() // 0x0F
-                    self.mutateState { $0.suspendState = .resumed(Date()) }
+                    // Аудит B2 (зеркало Minimed 352-354): пишем resume-дозу, чтобы oref
+                    // увидел возобновление базала сразу. resumeStartTime-init требует тип
+                    // инсулина — без него дозу не создаём (базал возобновится по истории).
+                    let now = Date()
+                    self.mutateState { s in
+                        s.suspendState = .resumed(now)
+                        if let it = s.insulinType {
+                            s.pendingDoses.append(UnfinalizedDose(resumeStartTime: now, insulinType: it))
+                        }
+                    }
+                    self.reportPendingDoses()
                     completion(nil)
                 } catch { completion(error) }
             }
@@ -517,9 +717,42 @@
 
         public func ensureCurrentPumpData(completion: ((Date?) -> Void)?) {
             Task {
+                // Гейт свежести (аудит R3, зеркало Minimed isPumpDataStale): CGM-тик может
+                // быть 1-мин, но полный RF-опрос помпы дорог и глушит радио. Если данные
+                // свежее 4 мин — отдаём кэш, RF не гоняем.
+                let last = readLastPumpDataRefresh()
+                if let last, Date().timeIntervalSince(last) < 240 {
+                    completion?(last)
+                    return
+                }
                 do {
                     let c = try requireClient()
                     try? await c.wakeup() // 0x02
+                    // Автосинк часов помпы (аудит C2 — КРИТИЧНО): reconcile сверяет
+                    // pending-дозы с историей в окне ±60с (firstMatchingIndex). Дрейф часов
+                    // помпы сдвигает временны́е метки истории → доза не матчится → двойной
+                    // учёт. Правим, если разошлись больше 20с.
+                    // Троттл: пытаемся синкать не чаще раза в час (SET_CLOCK на слабом
+                    // радио стабильно падает и засоряет лог — см. lastClockSyncAttempt).
+                    let clockDue: Bool = {
+                        refreshLock.lock()
+                        defer { refreshLock.unlock() }
+                        guard let last = lastClockSyncAttempt else { return true }
+                        return Date().timeIntervalSince(last) > 3600
+                    }()
+                    if clockDue, let pumpClock = try? await c.getClock() { // 0x07
+                        let drift = pumpClock.timeIntervalSinceNow
+                        if abs(drift) > 20 {
+                            refreshLock.lock()
+                            lastClockSyncAttempt = Date()
+                            refreshLock.unlock()
+                            try? await c.setClock() // 0x15
+                            os_log(
+                                "Pump clock drift %{public}.1fs > 20s — resync attempt",
+                                log: self.log, type: .info, drift
+                            )
+                        }
+                    }
                     if let st = try? await c.getStatus() { // 0x06
                         self.mutateState {
                             $0.suspendState = st.suspended ? .suspended(Date()) : .resumed(Date())
@@ -552,6 +785,8 @@
                         }
                     }
                     try await self.syncHistory() // 0x14 + 0x10
+                    // Успешный полный опрос — обновляем метку свежести (гейт R3 выше).
+                    markPumpDataRefreshed()
                     completion?(Date())
                 } catch {
                     completion?(nil)
@@ -655,6 +890,10 @@
         }
 
         public func prepareForDeactivation(_ completion: @escaping (Error?) -> Void) {
+            // Аудит B1: чистим сид автоконнекта ДО disconnect. Иначе протухший
+            // autoconnect/seeded-ключ переживает удаление помпы и блокирует подключение
+            // нового моста после переустановки (markAsPumpPeripheral не пересевает).
+            bleManager.clearAutoconnectState()
             if let id = state.peripheralIdentifier { bleManager.disconnect(id: id) }
             notifyDelegateOfDeactivation { completion(nil) }
         }
@@ -665,6 +904,24 @@
             delegateQueue?.async { [weak self] in
                 guard let self = self else { return }
                 self.lockedDelegate?.pumpManager(self, didReadReservoirValue: units, at: Date()) { _ in }
+            }
+        }
+
+        /// Немедленно публикует ВСЕ pending-дозы (suspend/resume/cancel/болюс/темп) в Loop,
+        /// не дожидаясь прохода истории (зеркало MinimedPumpManager.storePendingPumpEvents ~846).
+        /// Нужно, чтобы oref увидел остановку/возобновление подачи сразу — история по слабому
+        /// радио может дойти позже. replacePendingEvents: true — pending-события идемпотентны.
+        private func reportPendingDoses() {
+            let events = (state.pendingDoses + [state.unfinalizedBolus, state.unfinalizedTempBasal])
+                .compactMap { $0?.newPumpEvent() }
+            delegateQueue?.async { [weak self] in
+                guard let self = self else { return }
+                self.lockedDelegate?.pumpManager(
+                    self,
+                    hasNewPumpEvents: events,
+                    lastReconciliation: self.state.lastReconciliation,
+                    replacePendingEvents: true
+                ) { _ in }
             }
         }
 
@@ -693,7 +950,7 @@
 
             // Аннотируем дозы типом инсулина (зеркало MinimedPumpManager ~стр. 760-766).
             let insulinType = state.insulinType
-            let events: [NewPumpEvent] = result.events.map { event in
+            let annotated: [NewPumpEvent] = result.events.map { event in
                 guard let insulinType else { return event }
                 return NewPumpEvent(
                     date: event.date,
@@ -704,15 +961,143 @@
                 )
             }
 
+            // Согласование pending-доз с историей (зеркало MinimedKit reconcilePendingDosesWith).
+            // КРИТИЧНО против двойной дозы: pending-болюс попадает в IOB НЕМЕДЛЕННО (не ждёт,
+            // пока история дойдёт по слабому радио) → oref не порекомендует повтор. Появившись
+            // в истории — схлопывается (нет дубля); зависший фантом — удаляется.
+            let fetchedAt = Date()
+            let remainingEvents = reconcilePendingDoses(with: annotated, fetchedAt: fetchedAt)
+
+            // Отчёт в Loop: события истории (без схлопнутых) + ВСЕ pending как события.
+            let pendingEvents = (state.pendingDoses + [state.unfinalizedTempBasal, state.unfinalizedBolus])
+                .compactMap { $0?.newPumpEvent() }
+            // Сортировка по date ВОЗРАСТАНИЮ (аудит R4): iAPS берёт lastEventDate =
+            // events.last?.date. pending-хвост (склеен после history) может держать более
+            // СТАРУЮ дату → откат lastEventDate → фильтр застревает, каждый цикл качает всё.
+            let reportEvents = (remainingEvents + pendingEvents).sorted { $0.date < $1.date }
+
             delegateQueue?.async { [weak self] in
                 guard let self = self else { return }
                 self.lockedDelegate?.pumpManager(
                     self,
-                    hasNewPumpEvents: events,
-                    lastReconciliation: Date(),
+                    hasNewPumpEvents: reportEvents,
+                    lastReconciliation: self.state.lastReconciliation,
                     replacePendingEvents: true
-                ) { _ in }
+                ) { error in
+                    guard error == nil else { return }
+                    // Чистим pending, согласованные с историей И завершённые (зеркало Minimed ~784).
+                    self.mutateState { s in
+                        if let b = s.unfinalizedBolus, b.isReconciledWithHistory, b.isFinished { s.unfinalizedBolus = nil }
+                        if let t = s.unfinalizedTempBasal, t.isReconciledWithHistory,
+                           t.isFinished { s.unfinalizedTempBasal = nil }
+                        s.pendingDoses.removeAll { $0.isReconciledWithHistory && $0.isFinished }
+                    }
+                }
             }
+        }
+
+        /// Согласование (dedup) pending-доз с событиями истории — точное зеркало
+        /// MinimedPumpManager.reconcilePendingDosesWith (static). Матчит по временно́му окну,
+        /// строит mapping event.raw→доза, помечает дозу reconciled.
+        private static func reconcilePendingDosesWith(
+            _ events: [NewPumpEvent],
+            reconciliationMappings: [Data: ReconciledDoseMapping],
+            pendingDoses: [UnfinalizedDose]
+        )
+            -> (
+                remainingEvents: [NewPumpEvent],
+                reconciliationMappings: [Data: ReconciledDoseMapping],
+                pendingDoses: [UnfinalizedDose]
+            )
+        {
+            var newMapping = reconciliationMappings
+            var reconcilable = events.filter { !newMapping.keys.contains($0.raw) }
+            let matchingWindow = TimeInterval(minutes: 1)
+
+            let allPending = pendingDoses.map { dose -> UnfinalizedDose in
+                if let index = reconcilable.firstMatchingIndex(for: dose, within: matchingWindow) {
+                    let historyEvent = reconcilable[index]
+                    newMapping[historyEvent.raw] = ReconciledDoseMapping(
+                        startTime: dose.startTime, uuid: dose.uuid, eventRaw: historyEvent.raw
+                    )
+                    var reconciled = dose
+                    reconciled.reconcile(with: historyEvent)
+                    reconcilable.remove(at: index)
+                    return reconciled
+                }
+                return dose
+            }
+            let remaining = events.filter { newMapping[$0.raw] == nil }
+            return (remaining, newMapping, allPending)
+        }
+
+        /// Instance-обёртка: согласует unfinalizedBolus/Temp + pendingDoses с историей,
+        /// раскладывает результат обратно по слотам, чистит зависшие/протухшие. Зеркало
+        /// MinimedPumpManager.reconcilePendingDosesWith (instance ~665). Возвращает события
+        /// истории без схлопнутых с pending.
+        private func reconcilePendingDoses(with events: [NewPumpEvent], fetchedAt: Date) -> [NewPumpEvent] {
+            var remaining: [NewPumpEvent] = events
+            mutateState { state in
+                let allPending = (state.pendingDoses + [state.unfinalizedTempBasal, state.unfinalizedBolus]).compactMap { $0 }
+                let r = Self.reconcilePendingDosesWith(
+                    events, reconciliationMappings: state.reconciliationMappings, pendingDoses: allPending
+                )
+                remaining = r.remainingEvents
+                state.lastReconciliation = fetchedAt
+
+                let expirationCutoff = fetchedAt.addingTimeInterval(.hours(-12))
+                state.reconciliationMappings = r.reconciliationMappings.filter { $0.value.startTime >= expirationCutoff }
+
+                // Разложить обратно: незавершённые → в слоты unfinalizedBolus/Temp; завершённые
+                // остаются в pendingDoses до чистки; фантомный болюс (>1 мин после конца, не в
+                // истории) — удалить (зеркало Minimed ~693).
+                state.unfinalizedBolus = nil
+                state.unfinalizedTempBasal = nil
+                state.pendingDoses = r.pendingDoses.filter { dose in
+                    if !dose.isFinished {
+                        switch dose.doseType {
+                        case .bolus: state.unfinalizedBolus = dose
+                            return false
+                        case .tempBasal: state.unfinalizedTempBasal = dose
+                            return false
+                        default: break
+                        }
+                    }
+                    if dose.doseType == .bolus, dose.finishTime < fetchedAt.addingTimeInterval(.minutes(-1)),
+                       !dose.isReconciledWithHistory
+                    {
+                        os_log(
+                            "Removing bolus that did not reconcile with history: %{public}@",
+                            log: self.log,
+                            type: .error,
+                            String(describing: dose)
+                        )
+                        return false
+                    }
+                    return dose.startTime >= expirationCutoff
+                }
+
+                // Отмена темпа из истории (аудит B3, зеркало Minimed 702-719): если помпа
+                // сама оборвала текущий темп-базал (маркер отмены — событие темпа с
+                // startDate==endDate внутри окна нашего темпа), укорачиваем незавершённый
+                // темп по этому событию. Иначе state держит фантомный темп на всю
+                // длительность → oref завышает базальный IOB.
+                if var runningTemp = state.unfinalizedTempBasal {
+                    if let cancel = remaining.first(where: { event in
+                        guard let dose = event.dose, dose.type == .tempBasal,
+                              dose.startDate > runningTemp.startTime,
+                              dose.startDate < runningTemp.finishTime,
+                              dose.startDate.timeIntervalSince(dose.endDate) == 0
+                        else { return false }
+                        return true
+                    }) {
+                        runningTemp.cancel(at: cancel.date, pumpModel: state.pumpModel)
+                        state.unfinalizedTempBasal = runningTemp
+                        state.suspendState = .resumed(cancel.date)
+                    }
+                }
+            }
+            return remaining
         }
 
         /// Зеркало MinimedPumpManager.updateLastEventDates (строки 810-841).
@@ -757,6 +1142,11 @@
         /// rewind/setChange которые могли быть старше startDate и не попали в обычный синк.
         /// Вызывается в отдельном Task из syncHistory — не блокирует поллинг.
         private func backfillEventDates() async {
+            // Single-flight (аудит B7): syncHistory может стартовать несколько проходов
+            // подряд; параллельные 16-страничные бэкафиллы забивают радио и морят голодом
+            // команды дозирования. Пускаем строго один за раз.
+            guard beginBackfill() else { return }
+            defer { endBackfill() }
             guard let c = try? requireClient() else { return }
             let sync = PickleLinkHistorySync(client: c, pumpModel: state.pumpModel, timeZone: state.timeZone)
             do {
@@ -799,6 +1189,10 @@
                      .timeout: return .communication(nil)
                 case .invalidParam,
                      .notConfigured: return .configuration(nil)
+                // Новый SSTAT 0x09 от прошивки 1.4.5: аргументы ушли в эфир, ACK потерян —
+                // доза МОГЛА пройти. uncertainDelivery заставит Loop не ретраить (защита
+                // от двойной дозы); сама доза уже зафиксирована в enactBolus.
+                case .uncertain: return .uncertainDelivery
                 default: return .deviceState(nil)
                 }
             case .characteristicsMissing,
@@ -828,9 +1222,13 @@
             poolLock.lock()
             if bridges[id] == nil { bridges[id] = BridgeLink(peripheral) }
             poolLock.unlock()
+            // Пошёл коннект — ждём готовности GATT; если не поднимется за 12с, watchdog
+            // форсирует реконнект (защита от зависшего полу-коннекта).
+            scheduleReadyWatchdog(id)
         }
 
         public func bleManager(_: PickleLinkBLEManager, didDisconnect id: UUID, error _: Error?) {
+            cancelReadyWatchdog(id) // коннект оборвался — watchdog больше не нужен
             poolLock.lock()
             let link = bridges.removeValue(forKey: id)
             if activeBridgeID == id { activeBridgeID = nil }
@@ -853,6 +1251,7 @@
             // Источник истины — приложение: переотправляем ConfigurePump (0x01) каждому
             // мосту при готовности (идемпотентно; все мосты настроены на одну помпу).
             let pumpID = state.pumpID
+            cancelReadyWatchdog(id) // GATT поднялся — снимаем watchdog
             poolLock.lock()
             let link = bridges[id]
             link?.ready = true

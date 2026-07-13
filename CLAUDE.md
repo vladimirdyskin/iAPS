@@ -1,1 +1,1 @@
-/Users/vladimirdyskin/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian/Code/CLAUDE/iAPS.md
+/Users/vladimirdyskin/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian/Projects/iAPS/CLAUDE.md

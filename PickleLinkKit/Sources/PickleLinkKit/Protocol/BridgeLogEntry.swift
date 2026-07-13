@@ -251,6 +251,7 @@ public enum BridgeLogDecode {
         case 6: return "busy"
         case 7: return "internalError"
         case 8: return "timeout"
+        case 9: return "UNCERTAIN" // 1.4.5: доза могла быть доставлена (не ретраить)
         default: return "err\(raw)"
         }
     }

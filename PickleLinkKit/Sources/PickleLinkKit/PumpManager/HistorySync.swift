@@ -39,10 +39,16 @@
                 let upper = max(info.currentPage, lastSyncedPage)
                 var page = lastSyncedPage
                 while page <= upper {
-                    let raw = try await client.getHistory(page: page)
-                    let (events, _) = try decode(raw, after: startDate)
-                    collected.append(contentsOf: events)
-                    highestPageRead = max(highestPageRead, page)
+                    // Per-page устойчивость (аудит R1): битая/недочитанная страница (слабый
+                    // сигнал, firmware-сбой) НЕ должна ронять весь проход — иначе reconcile
+                    // клинит навсегда. Break → возвращаем уже собранное; highestPageRead
+                    // (advance курсора) остаётся на последней УСПЕШНОЙ странице.
+                    do {
+                        let raw = try await client.getHistory(page: page)
+                        let (events, _) = try decode(raw, after: startDate)
+                        collected.append(contentsOf: events)
+                        highestPageRead = max(highestPageRead, page)
+                    } catch { break }
                     if page == UInt8.max { break }
                     page += 1
                 }
@@ -52,10 +58,15 @@
                 var page: UInt8 = 0
                 let maxPages: UInt8 = 36 // x22/x23 ring is 36 pages (0...35).
                 while page < maxPages {
-                    let raw = try await client.getHistory(page: page)
-                    let (events, hasMore) = try decode(raw, after: startDate)
-                    collected.append(contentsOf: events)
-                    highestPageRead = max(highestPageRead, page)
+                    // Per-page устойчивость (аудит R1) — см. комментарий в targeted-ветке.
+                    let hasMore: Bool
+                    do {
+                        let raw = try await client.getHistory(page: page)
+                        let (events, more) = try decode(raw, after: startDate)
+                        collected.append(contentsOf: events)
+                        highestPageRead = max(highestPageRead, page)
+                        hasMore = more
+                    } catch { break }
                     if !hasMore { break }
                     page += 1
                 }
@@ -65,7 +76,16 @@
             let pumpEvents = collected.pumpEvents(from: pumpModel)
             let deduped = dedupe(pumpEvents)
 
-            return Result(events: deduped, newLastSyncedPage: highestPageRead)
+            // Сортировка по дате ВОЗРАСТАНИЮ обязательна: iAPS делает
+            // lastEventDate = events.last?.date (DeviceDataManager). collected склеен
+            // append'ом по страницам (новейшая-первая) → «пила», и .last указывал на
+            // СТАРОЕ событие глубокой страницы → lastEventDate не продвигался → фильтр
+            // застревал ~2ч → каждый цикл качались ВСЕ страницы. Сорт делает .last
+            // новейшим → фильтр свежий → ~1 страница/цикл. (MinimedKit отдаёт события
+            // по возрастанию через prepend страниц — мы зеркалим это сортировкой.)
+            let sortedEvents = deduped.sorted { $0.date < $1.date }
+
+            return Result(events: sortedEvents, newLastSyncedPage: highestPageRead)
         }
 
         /// Decode a raw page; returns its timestamped events after `startDate`

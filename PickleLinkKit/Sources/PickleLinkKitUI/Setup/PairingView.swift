@@ -7,8 +7,10 @@
 
         var body: some View {
             VStack(spacing: 16) {
-                ProgressView()
-                Text("Подключение и проверка прошивки…")
+                if model.errorMessage == nil {
+                    ProgressView()
+                    Text("Подключение к мосту…")
+                }
                 if let v = model.firmwareVersion {
                     Text("Прошивка: \(v)").font(.caption)
                 }

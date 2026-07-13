@@ -3,6 +3,44 @@
     import LoopKit
     // MinimedKit не импортируется: PumpModel, SuspendState, UnfinalizedDose — in-module (Medtronic/)
 
+    /// Связь «событие истории ↔ pending-доза» (зеркало MinimedKit ReconciledDoseMapping).
+    /// Когда pending-доза схлопывается с событием истории, её eventRaw попадает сюда и
+    /// это событие ИСКЛЮЧАЕТСЯ из отчёта в Loop, пока действует mapping (12ч) — доза
+    /// репортится ТОЛЬКО под своим стабильным uuid.raw. Без этого при переходе
+    /// pending→removed то же событие всплыло бы под event.raw → дубль дозы в IOB.
+    public struct ReconciledDoseMapping: Equatable {
+        let startTime: Date
+        let uuid: UUID
+        let eventRaw: Data
+    }
+
+    extension ReconciledDoseMapping: RawRepresentable {
+        public typealias RawValue = [String: Any]
+
+        public init?(rawValue: [String: Any]) {
+            guard
+                let startTime = rawValue["startTime"] as? Date,
+                let uuidString = rawValue["uuid"] as? String,
+                let uuid = UUID(uuidString: uuidString),
+                let eventRawString = rawValue["eventRaw"] as? String,
+                let eventRaw = Data(hexadecimalString: eventRawString)
+            else {
+                return nil
+            }
+            self.startTime = startTime
+            self.uuid = uuid
+            self.eventRaw = eventRaw
+        }
+
+        public var rawValue: [String: Any] {
+            [
+                "startTime": startTime,
+                "uuid": uuid.uuidString,
+                "eventRaw": eventRaw.hexadecimalString
+            ]
+        }
+    }
+
     public struct PickleLinkPumpManagerState: RawRepresentable, Equatable {
         public typealias RawValue = [String: Any]
 
@@ -31,6 +69,19 @@
 
         public var unfinalizedBolus: UnfinalizedDose?
         public var unfinalizedTempBasal: UnfinalizedDose?
+
+        /// Архив завершённых доз, ещё не согласованных с историей помпы. Новый болюс
+        /// не должен затирать предыдущий до сверки — старый перекладывается сюда.
+        /// Зеркало MinimedKit pendingDoses.
+        public var pendingDoses: [UnfinalizedDose] = []
+
+        /// Активные mappings «событие истории → согласованная доза» (12ч TTL).
+        /// Держатся между циклами и переживают рестарт — иначе дубль дозы (см.
+        /// ReconciledDoseMapping). Зеркало MinimedKit recentlyReconciledEvents.
+        public var reconciliationMappings: [Data: ReconciledDoseMapping] = [:]
+
+        /// Время последнего согласования истории с pending-дозами.
+        public var lastReconciliation: Date?
 
         /// Last reservoir reading, in Units.
         public var reservoirUnits: Double?
@@ -123,6 +174,14 @@
             if let raw = rawValue["unfinalizedTempBasal"] as? UnfinalizedDose.RawValue {
                 unfinalizedTempBasal = UnfinalizedDose(rawValue: raw)
             }
+            if let rawPending = rawValue["pendingDoses"] as? [UnfinalizedDose.RawValue] {
+                pendingDoses = rawPending.compactMap { UnfinalizedDose(rawValue: $0) }
+            }
+            if let rawMappings = rawValue["reconciliationMappings"] as? [ReconciledDoseMapping.RawValue] {
+                let mappings = rawMappings.compactMap { ReconciledDoseMapping(rawValue: $0) }
+                reconciliationMappings = Dictionary(mappings.map { ($0.eventRaw, $0) }, uniquingKeysWith: { _, new in new })
+            }
+            lastReconciliation = rawValue["lastReconciliation"] as? Date
             if let rawInsulinType = rawValue["insulinType"] as? InsulinType.RawValue {
                 insulinType = InsulinType(rawValue: rawInsulinType)
             }
@@ -153,6 +212,9 @@
             value["pumpBatteryChargeRemaining"] = pumpBatteryChargeRemaining
             value["unfinalizedBolus"] = unfinalizedBolus?.rawValue
             value["unfinalizedTempBasal"] = unfinalizedTempBasal?.rawValue
+            value["pendingDoses"] = pendingDoses.map(\.rawValue)
+            value["reconciliationMappings"] = reconciliationMappings.values.map(\.rawValue)
+            value["lastReconciliation"] = lastReconciliation
             value["insulinType"] = insulinType?.rawValue
             value["lastRadioErrorAt"] = lastRadioErrorAt
             value["lastWatchdogAt"] = lastWatchdogAt

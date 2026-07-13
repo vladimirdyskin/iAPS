@@ -34,7 +34,10 @@
         private let bridge = SetupBLEBridge()
 
         init() {
-            bleManager = PickleLinkBLEManager()
+            // Отдельный restore-ID (аудит B6): у мастера настройки свой CBCentralManager.
+            // С общим restore-ID два менеджера конфликтуют за state restoration (iOS
+            // отдаёт восстановленные периферии одному — второй «слепнет»).
+            bleManager = PickleLinkBLEManager(restoreIdentifier: "com.pickle.PickleLinkKit.central.setup")
             bridge.model = self
             bleManager.delegate = bridge
         }
@@ -48,8 +51,21 @@
             selectedDevice = device
             phase = .pairing
             busy = true
+            errorMessage = nil
             bleManager.stopScan()
             bleManager.connect(id: device.id)
+            // Таймаут: если за 20с не ушли дальше .pairing (peripheralIsReady не сработал —
+            // мост занят другим приложением или вне зоны), показываем ошибку вместо
+            // вечного спиннера.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard let self else { return }
+                if self.phase == .pairing, self.errorMessage == nil {
+                    self.busy = false
+                    self.errorMessage =
+                        "Не удалось подключиться к мосту. Закройте другое приложение (iAPS), держащее мост, или подойдите ближе, и попробуйте снова."
+                }
+            }
         }
 
         // Called by the BLE bridge.
@@ -62,43 +78,45 @@
         }
 
         func verifyFirmware() async {
-            guard let c = client else { return }
+            guard let c = client else { phase = .pumpID
+                return }
             busy = true
             defer { busy = false }
-            do {
-                let v = try await c.ping() // 0x13
-                firmwareVersion = v
-                guard v.hasPrefix("pickle_smart") else {
-                    errorMessage = "Unexpected firmware: \(v)"
-                    return
-                }
-                phase = .pumpID
-            } catch {
-                errorMessage = "PING failed: \(error)"
-            }
+            // Версию прошивки берём только для показа — НЕ блокируем добавление по ней.
+            // Переходим к вводу номера помпы в любом случае (даже если ping не дошёл).
+            firmwareVersion = try? await c.ping() // 0x13 (best-effort)
+            phase = .pumpID
         }
 
         func configure(pumpID: String) async {
             guard let c = client else { return }
             busy = true
             defer { busy = false }
+            // Единственное, что реально нужно для «добавить»: записать номер помпы в мост.
+            // CONFIGURE_PUMP (0x01) — ЛОКАЛЬНАЯ команда моста (пишет pump_id в NVS),
+            // радио до помпы НЕ требуется.
             do {
                 try await c.configurePump(id: pumpID) // 0x01
-                try? await c.setFrequency(hz: 868_350_000) // 0x11 — рабочая частота 868.35 МГц ДО чтения модели
-                let raw = try await c.getModel() // 0x03
-                guard let modelStr = PickleLinkConversions.medtronicModelString(fromRaw: raw),
-                      let model = PumpModel(rawValue: modelStr)
-                else {
-                    errorMessage = "Unrecognised pump model (0x\(String(raw, radix: 16)))"
-                    return
-                }
-                pumpModel = model
-                // Синхронизируем часы помпы при настройке (SCMD 0x15 SET_CLOCK).
-                try? await c.setClock() // 0x15 — не блокирует онбординг при ошибке
-                phase = .frequency
             } catch {
                 errorMessage = "CONFIGURE_PUMP failed: \(error)"
+                return
             }
+            // Частота и часы — best-effort, НЕ блокируют.
+            try? await c.setFrequency(hz: 868_350_000) // 0x11
+            try? await c.setClock() // 0x15
+            // Модель помпы читаем best-effort (аудит C3): getModel (0x03) идёт до помпы по
+            // радио и может упасть/затормозить при слабом сигнале — тогда фолбэк 722
+            // (Paradigm 5/7-серия), чтобы не блокировать добавление. Реальную модель
+            // подхватываем, когда радио доступно; сменить можно перенастройкой.
+            if let raw = try? await c.getModel(),
+               let s = PickleLinkConversions.medtronicModelString(fromRaw: raw),
+               let m = PumpModel(rawValue: s)
+            {
+                pumpModel = m
+            } else {
+                pumpModel = .model722
+            }
+            phase = .frequency
         }
 
         func setFrequency(hz: UInt32?) async {

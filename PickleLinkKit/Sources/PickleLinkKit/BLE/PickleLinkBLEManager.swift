@@ -30,6 +30,36 @@ import os.log
         private let restoreID: String
         private var pendingConnectIDs: Set<UUID> = []
 
+        /// Скан-фолбэк: если pending-`central.connect()` молчит 30с (iOS мог инвалидировать
+        /// старый CBPeripheral после долгого отсутствия — «отошёл и вернулся»), включаем скан.
+        /// В foreground didDiscover→connect подхватит мост; в фоне безвреден (pending остаётся
+        /// основным). Отменяется при коннекте.
+        private var reconnectScanWatchdog: DispatchWorkItem?
+
+        /// true, пока активен именно скан-фолбэк реконнекта (запущен watchdog'ом ниже),
+        /// а НЕ UI-скан из настроек. Позволяет погасить фолбэк-скан после успешного
+        /// коннекта, не трогая UI-скан (аудит R5).
+        private var fallbackScanActive = false
+
+        /// Все мутации BLE-состояния должны идти на main-очереди — там же работают
+        /// колбэки CBCentralManager (init с queue: nil). Публичные методы зовутся с
+        /// processQueue/UI (аудит K3): без хопа гонка за discovered/connected/peripheralRefs.
+        private func onMain(_ block: @escaping () -> Void) {
+            if Thread.isMainThread { block() } else { DispatchQueue.main.async(execute: block) }
+        }
+
+        private func scheduleReconnectScanFallback() {
+            reconnectScanWatchdog?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.activeID == nil, self.connected.isEmpty else { return }
+                os_log("BLE pending silent 30s → scan fallback", log: Self.bleLog, type: .error)
+                self.fallbackScanActive = true // это фолбэк-скан, гасим его в didConnect
+                self.startScan() // didDiscover(enabled, activeID==nil) → connect()
+            }
+            reconnectScanWatchdog = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
+        }
+
         /// Диагностика BLE-жизненного цикла (os_log). Снимается с устройства через
         /// `log collect`/sysdiagnose, фильтр: subsystem com.pickle.PickleLinkKit, category BLE.
         /// Нужна для разбора интермиттентных отвалов моста — пишет reason разрыва.
@@ -59,6 +89,16 @@ import os.log
             UserDefaults.standard.set(true, forKey: seededKey)
         }
 
+        /// Сбрасывает память автоконнекта (аудит B1): и список включённых мостов, и флаг
+        /// «уже засеяно». Вызывается при деактивации помпы — иначе протухший сид переживёт
+        /// удаление и заблокирует подключение нового моста после переустановки.
+        public func clearAutoconnectState() {
+            onMain {
+                UserDefaults.standard.removeObject(forKey: "\(self.restoreID).autoconnect")
+                UserDefaults.standard.removeObject(forKey: "\(self.restoreID).autoconnectSeeded")
+            }
+        }
+
         // ОДИН активный коннект за раз. С несколькими одновременными коннектами мосты
         // глушат друг друга на радио помпы (коллизия 868 МГц) и BLE рвётся
         // (supervision timeout). Подключён ТОЛЬКО лучший мост; остальные — кандидаты,
@@ -79,14 +119,18 @@ import os.log
         /// заново pend всех → подхватится тот, что в зоне (роуминг работает и в фоне).
         private func connectAllEnabled() {
             guard activeID == nil else { return }
+            var anyPending = false
             for id in enabledIDs {
                 let p = peripheralRefs[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first
                 guard let peripheral = p else { continue }
                 peripheralRefs[id] = peripheral
                 pendingConnectIDs.insert(id)
                 central.connect(peripheral, options: nil)
+                anyPending = true
                 os_log("BLE reconnect pending %{public}@", log: Self.bleLog, type: .info, id.uuidString)
             }
+            // Поставили pending — подстрахуемся скан-фолбэком, если он молчит (дыра №2).
+            if anyPending { scheduleReconnectScanFallback() }
         }
 
         // MARK: - Autoconnect memory
@@ -110,33 +154,39 @@ import os.log
         }
 
         public func setAutoconnect(id: UUID, _ enabled: Bool) {
-            var ids = autoconnectIDs
-            if enabled {
-                ids.insert(id)
-                autoconnectIDs = ids
-                // Новый кандидат. Pending-коннект ко всем включённым (если активного нет);
-                // лишние отменятся в didConnect. В резерве подхватится при обрыве текущего.
-                connectAllEnabled()
-            } else {
-                ids.remove(id)
-                autoconnectIDs = ids
-                disconnect(id: id) // если это активный — didDisconnect переключит на другой
+            onMain {
+                var ids = self.autoconnectIDs
+                if enabled {
+                    ids.insert(id)
+                    self.autoconnectIDs = ids
+                    // Новый кандидат. Pending-коннект ко всем включённым (если активного нет);
+                    // лишние отменятся в didConnect. В резерве подхватится при обрыве текущего.
+                    self.connectAllEnabled()
+                } else {
+                    ids.remove(id)
+                    self.autoconnectIDs = ids
+                    self.disconnect(id: id) // если это активный — didDisconnect переключит на другой
+                }
             }
         }
 
         /// Запросить RSSI у всех подключённых периферий.
         /// Результат придёт через PickleLinkPeripheralDelegate.peripheral(_:didReadRSSI:).
         public func updateRSSI() {
-            for (_, plp) in connected {
-                plp.peripheral.readRSSI()
+            onMain {
+                for (_, plp) in self.connected {
+                    plp.peripheral.readRSSI()
+                }
             }
         }
 
         /// Вызывается из PickleLinkPumpManager.peripheral(_:didReadRSSI:).
         /// Обновляет RSSI в discovered и уведомляет делегата (DataSource пересобирает список).
         public func updateDiscoveredRSSI(id: UUID, rssi: Int) {
-            discovered[id]?.rssi = rssi
-            delegate?.bleManager(self, didUpdateDiscovered: Array(discovered.values))
+            onMain {
+                self.discovered[id]?.rssi = rssi
+                self.delegate?.bleManager(self, didUpdateDiscovered: Array(self.discovered.values))
+            }
         }
 
         public init(restoreIdentifier: String = "com.pickle.PickleLinkKit.central") {
@@ -152,47 +202,53 @@ import os.log
         // MARK: - Public API
 
         public func startScan() {
-            guard central.state == .poweredOn else { return }
-            // allowDuplicates=false: ОБЯЗАТЕЛЬНО. С true CoreBluetooth шлёт didDiscover
-            // десятки раз/сек на главную очередь → перестройка UI-списка → зависание
-            // главного потока → watchdog-килл iAPS (0x8badf00d) → обрыв BLE (reason 19)
-            // → «ошибка связи». Резерв получает RSSI один раз при старте скана — этого
-            // достаточно для отображения сигнала, без флуда.
-            central.scanForPeripherals(
-                withServices: [PickleLinkUUIDs.service],
-                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
-            )
+            onMain {
+                guard self.central.state == .poweredOn else { return }
+                // allowDuplicates=false: ОБЯЗАТЕЛЬНО. С true CoreBluetooth шлёт didDiscover
+                // десятки раз/сек на главную очередь → перестройка UI-списка → зависание
+                // главного потока → watchdog-килл iAPS (0x8badf00d) → обрыв BLE (reason 19)
+                // → «ошибка связи». Резерв получает RSSI один раз при старте скана — этого
+                // достаточно для отображения сигнала, без флуда.
+                self.central.scanForPeripherals(
+                    withServices: [PickleLinkUUIDs.service],
+                    options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                )
+            }
         }
 
         public func stopScan() {
-            central.stopScan()
+            onMain { self.central.stopScan() }
         }
 
         public func connect(id: UUID) {
-            // Единственный активный коннект — рвём все прочие перед новым.
-            for (cid, plp) in connected where cid != id {
-                central.cancelPeripheralConnection(plp.peripheral)
+            onMain {
+                // Единственный активный коннект — рвём все прочие перед новым.
+                for (cid, plp) in self.connected where cid != id {
+                    self.central.cancelPeripheralConnection(plp.peripheral)
+                }
+                let p = self.peripheralRefs[id] ?? self.central.retrievePeripherals(withIdentifiers: [id]).first
+                guard let peripheral = p else { self.startScan()
+                    return }
+                self.peripheralRefs[id] = peripheral
+                self.activeID = id
+                self.pendingConnectIDs.insert(id)
+                self.central.connect(peripheral, options: nil)
             }
-            let p = peripheralRefs[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first
-            guard let peripheral = p else { startScan()
-                return }
-            peripheralRefs[id] = peripheral
-            activeID = id
-            pendingConnectIDs.insert(id)
-            central.connect(peripheral, options: nil)
         }
 
         public func disconnect(id: UUID) {
-            pendingConnectIDs.remove(id)
-            if let plp = connected[id] {
-                // Активный коннект — рвём; didDisconnectPeripheral дочистит и переключит.
-                central.cancelPeripheralConnection(plp.peripheral)
-            } else if let p = peripheralRefs[id] {
-                // Только pending-попытка — отменяем. didDisconnect не придёт, чистим сами.
-                central.cancelPeripheralConnection(p)
-                if activeID == id {
-                    activeID = nil
-                    connectAllEnabled()
+            onMain {
+                self.pendingConnectIDs.remove(id)
+                if let plp = self.connected[id] {
+                    // Активный коннект — рвём; didDisconnectPeripheral дочистит и переключит.
+                    self.central.cancelPeripheralConnection(plp.peripheral)
+                } else if let p = self.peripheralRefs[id] {
+                    // Только pending-попытка — отменяем. didDisconnect не придёт, чистим сами.
+                    self.central.cancelPeripheralConnection(p)
+                    if self.activeID == id {
+                        self.activeID = nil
+                        self.connectAllEnabled()
+                    }
                 }
             }
         }
@@ -280,13 +336,26 @@ import os.log
             // Подключился мост, который НЕ включён тогглом (гонка: тоггл выключили, пока
             // pending-коннект был в полёте). Отклоняем — активным держим только
             // включённый мост, иначе UI «перевёрнут» (выключенный показан активным).
-            guard enabledIDs.contains(peripheral.identifier) else {
+            // ИСКЛЮЧЕНИЕ: явный connect(id:) из мастера настройки/UI выставляет activeID
+            // ДО коннекта — такой мост пропускаем независимо от тогглов (при ДОБАВЛЕНИИ
+            // помпы он ещё не в autoconnect). Гасим только непрошеный автоконнект
+            // (connectAllEnabled activeID не трогает → activeID != этот мост).
+            guard enabledIDs.contains(peripheral.identifier) || activeID == peripheral.identifier else {
                 central.cancelPeripheralConnection(peripheral)
                 if activeID == peripheral.identifier { activeID = nil }
                 connectAllEnabled()
                 return
             }
             activeID = peripheral.identifier
+            reconnectScanWatchdog?.cancel() // коннект пошёл — скан-фолбэк не нужен
+            reconnectScanWatchdog = nil
+            // Если это был именно фолбэк-скан реконнекта (аудит R5) — гасим его: коннект
+            // поднялся, крутить радио скана больше незачем. UI-скан из настроек (флаг не
+            // взведён) не трогаем — резервные мосты должны показывать живой RSSI.
+            if fallbackScanActive {
+                fallbackScanActive = false
+                stopScan()
+            }
             os_log("BLE connected %{public}@", log: Self.bleLog, type: .info, peripheral.identifier.uuidString)
             // Скан НЕ останавливаем — резервные мосты должны показывать живой RSSI
             // (иначе их значок «перечёркнут»). Один коннект + скан стабильны.
